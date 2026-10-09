@@ -164,3 +164,14 @@ terraform plan -parallelism=2 -out=tfplan && terraform apply -parallelism=2 tfpl
 - [ ] **Week 2:** Wazuh SIEM on `core-arm`, agents on all hosts
 - [ ] **Week 3:** Cowrie honeypot on an isolated VCN → Wazuh
 - [ ] **Week 4:** n8n threat-intel enrichment and weekly report
+
+---
+
+## Author
+
+**AinfoCyberSec7**: Cybersecurity Analyst
+GitHub: [github.com/AinfoCyberSec7](https://github.com/AinfoCyberSec7)
+
+## License
+
+[MIT](LICENSE) © 2026 AinfoCyberSec7
