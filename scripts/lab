@@ -1,0 +1,98 @@
+#!/bin/bash
+# lab - control access to the OCI SOC lab from this Mac.
+#   lab up       start wstunnel (launchd) + activate the oci-lab WireGuard tunnel
+#   lab down     deactivate the tunnel + stop wstunnel
+#   lab status   show every link of the chain
+#   lab ssh gw|core   SSH to the gateway or core VM through the tunnel
+#   lab logs     last lines of the wstunnel client log
+#   lab refresh  re-read the gateway public IP from Terraform
+# Never touches any other VPN on this Mac.
+set -uo pipefail
+
+LABDIR="$HOME/.wg-lab"
+LABEL="com.ocilab.wstunnel"
+PLIST="$LABDIR/$LABEL.plist"
+TUNNEL="oci-lab"
+GW_IP="10.66.66.1"
+DOM="gui/$(id -u)"
+
+ok()   { printf '  \033[32m✔\033[0m %s\n' "$*"; }
+bad()  { printf '  \033[31m✘\033[0m %s\n' "$*"; }
+info() { printf '  • %s\n' "$*"; }
+
+agent_loaded()  { launchctl print "$DOM/$LABEL" >/dev/null 2>&1; }
+agent_running() { launchctl print "$DOM/$LABEL" 2>/dev/null | grep -q 'state = running'; }
+udp_listening() { lsof -nP -iUDP@127.0.0.1:51820 2>/dev/null | grep -qi wstunnel; }
+tunnel_state()  { scutil --nc status "$TUNNEL" 2>/dev/null | head -1; }
+gw_ping()       { ping -c 1 -t 3 "$GW_IP" >/dev/null 2>&1; }
+
+start_agent() {
+  if ! agent_loaded; then
+    launchctl bootstrap "$DOM" "$PLIST" || { bad "could not load $LABEL"; return 1; }
+  elif ! agent_running; then
+    launchctl kickstart -k "$DOM/$LABEL"
+  fi
+  for _ in $(seq 1 10); do udp_listening && return 0; sleep 1; done
+  bad "wstunnel did not start - see: lab logs"; return 1
+}
+
+cmd_up() {
+  echo "Starting lab access..."
+  start_agent && ok "wstunnel client running (127.0.0.1:51820)" || return 1
+  if [ "$(tunnel_state)" != "Connected" ]; then
+    scutil --nc start "$TUNNEL"
+    for _ in $(seq 1 10); do [ "$(tunnel_state)" = "Connected" ] && break; sleep 1; done
+  fi
+  [ "$(tunnel_state)" = "Connected" ] && ok "WireGuard tunnel '$TUNNEL' connected" || { bad "tunnel '$TUNNEL' not connected"; return 1; }
+  info "waiting for handshake..."
+  for _ in $(seq 1 15); do
+    if gw_ping; then ok "gateway $GW_IP reachable - lab is UP"; echo "  next: ssh lab-gw   |   ssh lab-core"; return 0; fi
+    sleep 1
+  done
+  bad "no reply from $GW_IP yet - try: lab status  /  lab logs"; return 1
+}
+
+cmd_down() {
+  echo "Stopping lab access..."
+  [ "$(tunnel_state)" = "Connected" ] && scutil --nc stop "$TUNNEL"
+  ok "WireGuard tunnel '$TUNNEL' stopped"
+  agent_loaded && launchctl bootout "$DOM/$LABEL" 2>/dev/null
+  ok "wstunnel client stopped"
+}
+
+cmd_status() {
+  echo "Lab access chain:"
+  agent_running && ok "wstunnel agent running" || bad "wstunnel agent not running   (fix: lab up)"
+  udp_listening && ok "listening on 127.0.0.1:51820" || bad "nothing on 127.0.0.1:51820"
+  st=$(tunnel_state); [ "$st" = "Connected" ] && ok "tunnel '$TUNNEL': $st" || bad "tunnel '$TUNNEL': ${st:-unknown}   (fix: lab up)"
+  gw_ping && ok "gateway $GW_IP answers ping" || bad "gateway $GW_IP not answering"
+  info "endpoint: $(cat "$LABDIR/endpoint" 2>/dev/null || echo 'not set - run: lab refresh'):443"
+}
+
+cmd_ssh() {
+  case "${1:-}" in
+    gw)   shift; exec ssh lab-gw "$@" ;;
+    core) shift; exec ssh lab-core "$@" ;;
+    *)    echo "usage: lab ssh gw|core [command]"; return 1 ;;
+  esac
+}
+
+cmd_logs()    { tail -n "${1:-30}" "$LABDIR/wstunnel.log" 2>/dev/null || echo "no log yet"; }
+
+cmd_refresh() {
+  repo=$(cat "$LABDIR/repo_path" 2>/dev/null) || { bad "repo path unknown"; return 1; }
+  ip=$(cd "$repo" && terraform output -raw wg_gw_public_ip) || { bad "terraform output failed (DNS? retry)"; return 1; }
+  echo "$ip" > "$LABDIR/endpoint"
+  ok "endpoint set to $ip"
+  agent_loaded && launchctl kickstart -k "$DOM/$LABEL" && ok "wstunnel restarted"
+}
+
+case "${1:-status}" in
+  up)      cmd_up ;;
+  down)    cmd_down ;;
+  status)  cmd_status ;;
+  ssh)     shift; cmd_ssh "$@" ;;
+  logs)    shift; cmd_logs "$@" ;;
+  refresh) cmd_refresh ;;
+  *)       sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

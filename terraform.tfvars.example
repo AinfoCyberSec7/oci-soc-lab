@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and fill in. Never commit terraform.tfvars.
+tenancy_ocid     = "ocid1.tenancy.oc1..xxxxx"
+user_ocid        = "ocid1.user.oc1..xxxxx"
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "eu-frankfurt-1"
+
+ssh_public_key_path = "~/.ssh/oci_lab.pub"
+admin_cidr          = "203.0.113.25/32" # your egress public IP + /32 (only source allowed to reach the tunnel)
+allow_public_ssh    = true              # bootstrap only - set to false once `lab up` works
+
+wg_client_pubkey = "PASTE_CLIENT_PUBLIC_KEY_HERE"         # ~/.wg-lab/client.pub
+wstunnel_prefix  = "PASTE_CONTENTS_OF_WSTUNNEL_SECRET"     # ~/.wg-lab/wstunnel.secret
+alert_email      = "you@example.com"
+
+arm_ad_index = 0 # try 1 or 2 if you get "Out of host capacity"
+amd_ad_index = 1 # the AD that offers VM.Standard.E2.1.Micro

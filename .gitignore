@@ -1,0 +1,24 @@
+# --- secrets & state: NEVER commit ---
+*.tfvars
+!terraform.tfvars.example
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+tfplan
+plan.txt
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*.pem
+*.key
+*.secret
+*.conf
+*.log
+.env
+# --- tooling ---
+.terraform/
+# --- macOS ---
+.DS_Store
+._*
