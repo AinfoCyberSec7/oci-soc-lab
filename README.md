@@ -143,7 +143,10 @@ terraform plan -parallelism=2 -out=tfplan && terraform apply -parallelism=2 tfpl
 | Symptom | Fix |
 |---|---|
 | `lab status` shows ✘ on the tunnel | `lab up` |
-| Gateway does not answer ping | `lab logs`, then `lab down && lab up` |
+| Gateway does not answer ping | `lab up` (restarts the client once by itself); still failing: `lab logs`, then `lab down && lab up` |
+| `lab logs` shows `Cannot connect to tcp endpoint … timeout` | Packet loss on the admin network path, not the lab. Check with `curl -sk -o /dev/null -w '%{time_connect}\n' https://<gw-ip>/` (healthy ≈ 0.1 s; 1 s / 3 s / 7 s = lost SYNs) and retry later |
+| `systemctl` warns *unit changed on disk* | `sudo systemctl daemon-reload && sudo systemctl restart wstunnel` (re-running `install-wstunnel-server.sh` now does this) |
+| `terraform plan` shows only `Changes to Outputs` | Not drift: outputs were edited after the last apply. `terraform plan -out=tfplan`, check `0 to add/change/destroy`, `terraform apply tfplan` |
 | Terraform: `no such host` / `i/o timeout` | Intermittent DNS on the admin path; re-run (always use `-parallelism=2`) |
 | Admin egress IP changed | Update `admin_cidr`, `terraform apply` |
 | Gateway public IP changed | `lab refresh` |

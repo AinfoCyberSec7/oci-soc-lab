@@ -62,11 +62,15 @@ if [ -f /etc/iptables/rules.v4 ] && ! grep -q -- "--dport ${PORT} -j ACCEPT" /et
   sed -i "/--dport 22 -j ACCEPT/a -A INPUT ${RULE}" /etc/iptables/rules.v4
 fi
 
-echo "== 5/5 start"
+echo "== 5/5 (re)start"
+# daemon-reload + restart (not just enable --now) so a re-run always applies the
+# unit file on disk; otherwise systemd keeps running the old sandbox settings.
 systemctl daemon-reload
-systemctl enable --now wstunnel
+systemctl enable wstunnel
+systemctl restart wstunnel
 sleep 2
 systemctl is-active wstunnel
+systemctl show wstunnel -p NeedDaemonReload | grep -qx 'NeedDaemonReload=no' || { echo "unit not reloaded"; exit 1; }
 ss -tlnp | grep ":${PORT} " || { echo "NOT LISTENING"; journalctl -u wstunnel -n 20 --no-pager; exit 1; }
 grep -c -- "--dport ${PORT} -j ACCEPT" /etc/iptables/rules.v4 | sed 's/^/persistent rule count: /'
 echo "WSTUNNEL SERVER READY"

@@ -45,11 +45,16 @@ cmd_up() {
   fi
   [ "$(tunnel_state)" = "Connected" ] && ok "WireGuard tunnel '$TUNNEL' connected" || { bad "tunnel '$TUNNEL' not connected"; return 1; }
   info "waiting for handshake..."
-  for _ in $(seq 1 15); do
-    if gw_ping; then ok "gateway $GW_IP reachable - lab is UP"; echo "  next: ssh lab-gw   |   ssh lab-core"; return 0; fi
-    sleep 1
+  for attempt in 1 2; do
+    for _ in $(seq 1 15); do
+      if gw_ping; then ok "gateway $GW_IP reachable - lab is UP"; echo "  next: ssh lab-gw   |   ssh lab-core"; return 0; fi
+      sleep 1
+    done
+    # A stale client connection (e.g. after a server restart or a network blip)
+    # does not always recover on its own: restart the client once and retry.
+    [ "$attempt" = 1 ] && { info "no reply - restarting wstunnel client and retrying..."; launchctl kickstart -k "$DOM/$LABEL"; sleep 3; }
   done
-  bad "no reply from $GW_IP yet - try: lab status  /  lab logs"; return 1
+  bad "no reply from $GW_IP - try: lab logs  (TCP timeouts there = network path, not the lab)"; return 1
 }
 
 cmd_down() {
