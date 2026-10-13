@@ -38,6 +38,10 @@ EOF
 systemctl restart ssh
 systemctl enable --now fail2ban
 
+# --- Remove unneeded listeners: rpcbind (NFS helper, :111 on all interfaces) ---
+systemctl stop rpcbind.socket rpcbind.service || true
+systemctl mask rpcbind.socket rpcbind.service
+
 # --- WireGuard ---
 IFACE=$(ip route show default | awk '{print $5; exit}')
 # Keys are created in a subshell so the strict umask does not leak into the

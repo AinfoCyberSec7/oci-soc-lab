@@ -21,7 +21,7 @@ A hardened home-SOC foundation on **Oracle Cloud Always Free**, built with **Ter
   │                                                        │ NAT, VCN 10.10.0.0/16
   │                                           ┌────────────▼─────────────┐
   └── ssh lab-gw / ssh lab-core ─────────────►│ core-arm (A1.Flex 2/12GB)│
-                                              │  Docker - Wazuh (Week 2)  │
+                                              │  Elastic SIEM (Week 2)    │
                                               └──────────────────────────┘
 ```
 
@@ -164,9 +164,10 @@ terraform plan -parallelism=2 -out=tfplan && terraform apply -parallelism=2 tfpl
 ## Roadmap
 
 - [x] **Week 1:** zero-exposure foundation (this repo)
-- [ ] **Week 2:** Wazuh SIEM on `core-arm`, agents on all hosts
-- [ ] **Week 3:** Cowrie honeypot on an isolated VCN → Wazuh
+- [ ] **Week 2:** Elastic Security (SIEM) on `core-arm`, Elastic Agent on all hosts
+- [ ] **Week 3:** Cowrie honeypot on an isolated VCN → Elastic
 - [ ] **Week 4:** n8n threat-intel enrichment and weekly report
+- [ ] **Week 5:** same honeypot attacks in Microsoft Sentinel: a two-SIEM comparison
 
 ---
 

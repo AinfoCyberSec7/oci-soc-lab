@@ -1,5 +1,5 @@
 #!/bin/bash
-# core-arm bootstrap: hardening + Docker, ready for Wazuh and n8n in Week 2.
+# core-arm bootstrap: hardening + Docker, ready for Elastic Security (Week 2) and n8n.
 set -euxo pipefail
 exec > /var/log/lab-bootstrap.log 2>&1
 export DEBIAN_FRONTEND=noninteractive
@@ -26,12 +26,17 @@ EOF
 systemctl restart ssh
 systemctl enable --now fail2ban
 
+# --- Remove unneeded listeners: rpcbind (NFS helper, :111 on all interfaces) ---
+systemctl stop rpcbind.socket rpcbind.service || true
+systemctl mask rpcbind.socket rpcbind.service
+
 # --- Docker ---
 systemctl enable --now docker
 usermod -aG docker ubuntu
 
-# --- Kernel setting required by the Wazuh indexer (OpenSearch) ---
-echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-wazuh.conf
+# --- Kernel setting required by Elasticsearch (minimum 262144) ---
+# Explicit, so the lab does not depend on the image default.
+echo 'vm.max_map_count=1048576' > /etc/sysctl.d/99-elastic.conf
 sysctl --system
 
 echo "BOOTSTRAP DONE" > /var/log/lab-bootstrap.done

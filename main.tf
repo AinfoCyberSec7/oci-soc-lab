@@ -1,7 +1,7 @@
 # =====================================================================
 #  SOC Lab - Week 1: compartment, budget guard, network, 2 VMs
 #  Everything here is Always Free-eligible.
-#    core-arm : VM.Standard.A1.Flex 2 OCPU / 12 GB, 100 GB disk (Wazuh, n8n later)
+#    core-arm : VM.Standard.A1.Flex 2 OCPU / 12 GB, 100 GB disk (Elastic SIEM, n8n later)
 #    wg-gw    : VM.Standard.E2.1.Micro, 50 GB disk (WireGuard gateway)
 #  Leaves 50 GB of the 200 GB block allowance for the Week 3 honeypot.
 # =====================================================================
