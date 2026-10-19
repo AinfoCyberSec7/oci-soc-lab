@@ -1,0 +1,25 @@
+{
+  "rule_id": "soc-lab-ssh-failed-logins",
+  "name": "SOC lab - Repeated failed SSH logins from one source",
+  "description": "Three or more failed SSH authentications from the same source IP against the same host within the look-back window. Early sign of password guessing / brute force (MITRE ATT&CK T1110.001). Threshold kept below the fail2ban ban limit so the alert fires before the source is blocked.",
+  "type": "threshold",
+  "language": "kuery",
+  "index": ["logs-system.auth-*"],
+  "query": "event.category:authentication and event.outcome:failure and source.ip:*",
+  "threshold": { "field": ["source.ip", "host.name"], "value": 3 },
+  "interval": "1m",
+  "from": "now-6m",
+  "risk_score": 47,
+  "severity": "medium",
+  "enabled": true,
+  "tags": ["SOC lab", "Linux", "SSH", "Credential Access"],
+  "references": ["https://attack.mitre.org/techniques/T1110/001/"],
+  "threat": [{
+    "framework": "MITRE ATT&CK",
+    "tactic": { "id": "TA0006", "name": "Credential Access", "reference": "https://attack.mitre.org/tactics/TA0006/" },
+    "technique": [{
+      "id": "T1110", "name": "Brute Force", "reference": "https://attack.mitre.org/techniques/T1110/",
+      "subtechnique": [{ "id": "T1110.001", "name": "Password Guessing", "reference": "https://attack.mitre.org/techniques/T1110/001/" }]
+    }]
+  }]
+}

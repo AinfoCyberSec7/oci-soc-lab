@@ -1,0 +1,3 @@
+# Reviewed false positive: placeholder ${ELASTIC_PASSWORD} (escaped as $${...} for Compose),
+# resolved at runtime on the VM from the git-ignored .env. No secret in the repository.
+week2/elastic/docker-compose.yml:curl-auth-user:43

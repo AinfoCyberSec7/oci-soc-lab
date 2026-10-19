@@ -1,0 +1,131 @@
+# Week 2 - Elastic Security (SIEM), single node, on core-arm (2 OCPU / 12 GB, arm64).
+# Security on: TLS everywhere, random secrets from .env (git-ignored, made by gen-env.sh).
+# Images are pinned by digest (tag alone can be re-pointed; a digest cannot).
+# Ports are published on the private IP only (BIND_IP) - never 0.0.0.0. The OCI NSG
+# already limits that IP to the VCN, and the admin reaches it only through the tunnel.
+name: soc-elastic
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  # One-shot: creates the private CA + certificates, then sets the kibana_system password.
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5@sha256:13b4a40bb095774f5fda635e45fd5677cc6a26565e42b24997b0c72b88e75984
+    user: "0"
+    volumes:
+      - certs:/usr/share/elasticsearch/config/certs
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?run gen-env.sh first}
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD:?run gen-env.sh first}
+      - BIND_IP=${BIND_IP:?run gen-env.sh first}
+    command: >
+      bash -c '
+        set -e;
+        cd /usr/share/elasticsearch;
+        if [ ! -f config/certs/ca.zip ]; then
+          echo "Creating CA";
+          bin/elasticsearch-certutil ca --silent --pem -out config/certs/ca.zip;
+          unzip -q config/certs/ca.zip -d config/certs;
+        fi;
+        if [ ! -f config/certs/certs.zip ]; then
+          echo "Creating certificates";
+          printf "instances:\n  - name: es01\n    dns: [es01, localhost]\n    ip: [127.0.0.1, $${BIND_IP}]\n  - name: kibana\n    dns: [kibana, localhost]\n    ip: [127.0.0.1, $${BIND_IP}]\n  - name: fleet-server\n    dns: [fleet-server, localhost]\n    ip: [127.0.0.1, $${BIND_IP}]\n" > config/certs/instances.yml;
+          bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key;
+          unzip -q config/certs/certs.zip -d config/certs;
+        fi;
+        echo "Setting file permissions";
+        chown -R root:root config/certs;
+        find config/certs -type d -exec chmod 750 {} \;;
+        find config/certs -type f -exec chmod 640 {} \;;
+        echo "Waiting for Elasticsearch";
+        until curl -s --cacert config/certs/ca/ca.crt https://es01:9200 | grep -q "missing authentication credentials"; do sleep 10; done;
+        echo "Setting kibana_system password";
+        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:$${ELASTIC_PASSWORD}" -H "Content-Type: application/json" https://es01:9200/_security/user/kibana_system/_password -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 5; done;
+        echo "SETUP DONE";
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f config/certs/es01/es01.crt ]"]
+      interval: 2s
+      timeout: 5s
+      retries: 120
+    logging: *logging
+
+  es01:
+    depends_on:
+      setup: { condition: service_healthy }
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5@sha256:13b4a40bb095774f5fda635e45fd5677cc6a26565e42b24997b0c72b88e75984
+    volumes:
+      - certs:/usr/share/elasticsearch/config/certs:ro
+      - esdata01:/usr/share/elasticsearch/data
+    ports:
+      - "${BIND_IP}:9200:9200"
+    environment:
+      - node.name=es01
+      - cluster.name=soc-lab
+      - discovery.type=single-node
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms3g -Xmx3g
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es01/es01.key
+      - xpack.security.http.ssl.certificate=certs/es01/es01.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es01/es01.key
+      - xpack.security.transport.ssl.certificate=certs/es01/es01.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=basic
+      - xpack.ml.enabled=false
+    mem_limit: 5g
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+    logging: *logging
+
+  kibana:
+    depends_on:
+      es01: { condition: service_healthy }
+    image: docker.elastic.co/kibana/kibana:9.5.5@sha256:13b72ce7222c36e4213229004ae62a87aeb32fd372ebfa6fb38f7a3285fdbb78
+    volumes:
+      - certs:/usr/share/kibana/config/certs:ro
+      - kibanadata:/usr/share/kibana/data
+    ports:
+      - "${BIND_IP}:5601:5601"
+    environment:
+      - SERVERNAME=kibana
+      - ELASTICSEARCH_HOSTS=https://es01:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
+      - SERVER_SSL_ENABLED=true
+      - SERVER_SSL_CERTIFICATE=config/certs/kibana/kibana.crt
+      - SERVER_SSL_KEY=config/certs/kibana/kibana.key
+      - SERVER_PUBLICBASEURL=https://${BIND_IP}:5601
+      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_SECURITY_KEY:?run gen-env.sh first}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_SAVEDOBJECTS_KEY:?run gen-env.sh first}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_REPORTING_KEY:?run gen-env.sh first}
+      - NODE_OPTIONS=--max-old-space-size=1536
+    mem_limit: 2560m
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -o /dev/null -w '%{http_code}' https://localhost:5601/api/status | grep -qE '^(200|401)$'"]
+      interval: 15s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  certs:
+  esdata01:
+  kibanadata:
