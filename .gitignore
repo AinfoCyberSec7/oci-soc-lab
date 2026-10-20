@@ -22,3 +22,5 @@ override.tf.json
 # --- macOS ---
 .DS_Store
 ._*
+# --- local patch files ---
+*.patch
