@@ -17,6 +17,8 @@ override.tf.json
 *.conf
 *.log
 .env
+.env.bak*
+*.secrets.yml
 # --- tooling ---
 .terraform/
 # --- macOS ---

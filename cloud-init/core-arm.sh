@@ -23,6 +23,13 @@ MaxAuthTries 3
 LoginGraceTime 30
 X11Forwarding no
 EOF
+# --- Unused image account: Oracle's Ubuntu image creates "opc" (uid 1000) with the instance SSH key ---
+if id opc >/dev/null 2>&1; then
+  usermod -s /usr/sbin/nologin -e 1 opc
+  passwd -l opc >/dev/null
+  : > /home/opc/.ssh/authorized_keys 2>/dev/null || true
+fi
+printf '# opc comes with the Oracle Ubuntu image; it is not used in this lab.\nDenyUsers opc\n' > /etc/ssh/sshd_config.d/10-deny-opc.conf
 systemctl restart ssh
 systemctl enable --now fail2ban
 

@@ -80,8 +80,10 @@ cloud-init/core-arm.sh       # core first boot: hardening, Docker
 scripts/lab                  # Mac CLI: lab up | down | status | ssh | logs | refresh
 scripts/install-lab-cli.sh   # installs lab CLI, launchd agent, SSH shortcuts
 scripts/install-wstunnel-server.sh   # (re)installs wstunnel on an existing gateway
+scripts/lock-opc.sh                  # locks the unused "opc" image account on a running host
 week2/elastic/docker-compose.yml     # Elasticsearch + Kibana 9.5.5, pinned by digest, TLS everywhere
 week2/elastic/gen-env.sh             # creates the git-ignored .env with random secrets (on the VM)
+week2/elastic/kibana-secrets.sh      # Kibana secrets in a root-only file (not env/ps); render | rotate
 week2/elastic/fleet-setup.sh         # Fleet via Kibana API: server host, output, policies
 week2/elastic/install-fleet-server.sh  # Fleet Server on core-arm (host install)
 week2/elastic/install-agent.sh       # enrolls any Linux host (token read from stdin)
@@ -94,6 +96,7 @@ week3/logpull-honeypot.sh            # honeypot side of the pull: read-only, for
 week3/logpull-core.sh                # core side of the pull: pinned host key, 1-minute timer
 week3/cowrie-ingest.sh               # Fleet integration: Cowrie JSON -> logs-cowrie-default
 week3/verify-week3.sh                # read-only end-to-end check (run from the Mac)
+week3/check-attacks.sh               # read-only breakout hunt on the honeypot + attacker summary
 ```
 
 ---
@@ -175,6 +178,7 @@ A single-node **Elastic Security 9.5.5** stack on `core-arm`, collecting logs fr
 | No public exposure | Ports published on the **private IP only** (`10.10.1.129`), never `0.0.0.0`; NSG unchanged |
 | TLS everywhere | Private CA created on the VM; HTTP, transport, Kibana and Fleet all TLS; agents trust **only** that CA |
 | No default secrets | `gen-env.sh` creates random passwords/keys on the VM (`.env`, mode 600, git-ignored) |
+| Secrets not in `ps` | Kibana's password and keys are in a config file (`root:20998 640`), not in env vars, which the image turns into command-line flags readable by every local user |
 | Named accounts | Personal admin account for daily use; built-in `elastic` kept as break-glass |
 | Least exposure on hosts | Fleet Server bound to the private IP, host firewall allows 8220 **from the VCN only**; unused `rpcbind` masked |
 | Supply chain | Agent tarballs verified against Elastic's **SHA-512** before install |
@@ -195,7 +199,7 @@ A single-node **Elastic Security 9.5.5** stack on `core-arm`, collecting logs fr
 
 ```bash
 scp -r week2 lab-core:~/soc-lab/
-ssh lab-core 'cd ~/soc-lab/week2/elastic && ./gen-env.sh && docker compose up -d'
+ssh lab-core 'cd ~/soc-lab/week2/elastic && ./gen-env.sh && ./kibana-secrets.sh render && docker compose up -d'
 ssh lab-core 'cd ~/soc-lab/week2/elastic && ./fleet-setup.sh && ./install-fleet-server.sh && ./load-rules.sh'
 # other hosts: copy /etc/elastic-agent-certs/ca.crt to them, then pipe an enrollment token into install-agent.sh
 ```
@@ -258,6 +262,16 @@ A **Cowrie 3.1.5** SSH and Telnet honeypot that is deliberately open to the inte
 - **Router breakout:** `sh`, `system`, then a dropper script.
 - **Honeypot fingerprinting:** bots check quoting (`printf '%s\n' 'a b;$()'`) and subshell variable scoping, to tell a real shell from an emulated one.
 - **Mirai-style loader:** one binary per CPU architecture plus a shell script, from `hxxp://160.119.66[.]206/bins/` (defanged).
+
+### Findings from the Week 3 security review (and how they were fixed)
+
+Hunting for a honeypot breakout (`week3/check-attacks.sh`) found no breakout, but it did find three real weaknesses elsewhere:
+
+| Finding | Risk | Fix |
+|---|---|---|
+| **Kibana secrets in the process list.** The Kibana image turns env vars into command-line flags, so the `kibana_system` password and the three encryption keys were readable by **any local user** via `ps` (for example, the user that pulls data from the attacker-facing honeypot) | Credential theft by a local foothold | Secrets moved to a config file readable only by root and a dedicated group (`kibana-secrets.sh`). All four values **rotated**, saved objects (Fleet, rules) **re-encrypted** with the new key before the old one was dropped. Verified: 0 secrets in `ps`, the old password gets **HTTP 401**, and every rule and agent works on the new key alone |
+| **Unused `opc` account** created by Oracle's Ubuntu image on every host, with a login shell and the instance SSH key | A second way in and a quiet place to persist. As uid 1000 it equals the uid of Elasticsearch/Kibana inside their containers, so a shell as opc could read their process environment | Locked on all hosts (`nologin`, password locked, account expired, key removed, `DenyUsers opc`), and locked at first boot in all cloud-init files. Verified live: opc refused, ubuntu works |
+| **uid collisions between containers and host accounts** (Cowrie's 999 = `ocarun`, Elastic's 1000 = `opc`) | File and process access that crosses the container boundary | Cowrie runs as the unused uid 20999; Kibana reads its secrets through the unused group 20998 |
 
 ### Deploy Week 3 (after Week 2)
 
@@ -327,6 +341,7 @@ In Kibana: **Discover** → data view **Honeypot (Cowrie)** (`logs-cowrie-*`).
 - **Secret in instance metadata:** on a rebuild, `wstunnel_prefix` is passed through cloud-init user data (visible to OCI admins and to local users on the gateway via the metadata service). It is one of several layers; rotate it by changing `/etc/wstunnel/env` and `~/.wg-lab/wstunnel.secret`.
 - **The honeypot is meant to be attacked:** its public IP is published to attackers by design, and it stores real malware samples. That's why it has its own VCN, egress filters and a lab-initiated, read-only pull, and why the samples are never moved off it.
 - **Cowrie can be fingerprinted:** skilled attackers can detect an emulated shell (some bots already test for this). The lab collects mostly automated botnet activity, not targeted intrusions.
+- **Elasticsearch still runs as uid 1000** inside its container (the image's default). With `opc` locked, nothing on the host logs in as that uid.
 - **Single admin IP:** access depends on the admin egress IP. That is intentional; it is the strongest network filter available.
 
 ---

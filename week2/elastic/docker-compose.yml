@@ -99,21 +99,24 @@ services:
     volumes:
       - certs:/usr/share/kibana/config/certs:ro
       - kibanadata:/usr/share/kibana/data
+      # Secrets come from a root-owned file, NOT environment variables: the Kibana image turns
+      # env vars into command-line flags, which every local user can read in `ps`.
+      # Made from .env by kibana-secrets.sh (git-ignored).
+      - ./kibana.secrets.yml:/usr/share/kibana/config/kibana.yml:ro
+    # The file is readable by group 20998 only. The image's own uid/gid 1000 is "opc" on the host,
+    # so the file must not rely on it.
+    group_add: ["20998"]
     ports:
       - "${BIND_IP}:5601:5601"
     environment:
       - SERVERNAME=kibana
       - ELASTICSEARCH_HOSTS=https://es01:9200
       - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
       - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
       - SERVER_SSL_ENABLED=true
       - SERVER_SSL_CERTIFICATE=config/certs/kibana/kibana.crt
       - SERVER_SSL_KEY=config/certs/kibana/kibana.key
       - SERVER_PUBLICBASEURL=https://${BIND_IP}:5601
-      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_SECURITY_KEY:?run gen-env.sh first}
-      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_SAVEDOBJECTS_KEY:?run gen-env.sh first}
-      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_REPORTING_KEY:?run gen-env.sh first}
       - NODE_OPTIONS=--max-old-space-size=1536
     mem_limit: 2560m
     security_opt: ["no-new-privileges:true"]
