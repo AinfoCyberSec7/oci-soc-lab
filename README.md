@@ -97,6 +97,9 @@ week3/logpull-core.sh                # core side of the pull: pinned host key, 1
 week3/cowrie-ingest.sh               # Fleet integration: Cowrie JSON -> logs-cowrie-default
 week3/verify-week3.sh                # read-only end-to-end check (run from the Mac)
 week3/check-attacks.sh               # read-only breakout hunt on the honeypot + attacker summary
+week3/investigate.sh                 # forensics: ip | session (+ terminal replay) | hashes | hash | preserve
+week3/import-dashboard.sh            # imports the live Kibana dashboard
+week3/dashboard/*.ndjson             # dashboard, panels, saved search, data view
 ```
 
 ---
@@ -263,6 +266,45 @@ A **Cowrie 3.1.5** SSH and Telnet honeypot that is deliberately open to the inte
 - **Honeypot fingerprinting:** bots check quoting (`printf '%s\n' 'a b;$()'`) and subshell variable scoping, to tell a real shell from an emulated one.
 - **Mirai-style loader:** one binary per CPU architecture plus a shell script, from `hxxp://160.119.66[.]206/bins/` (defanged).
 
+### Analysis and forensics
+
+**Live dashboard: "Honeypot SOC - live"** (`week3/import-dashboard.sh`), with a 15 s auto-refresh. It shows totals, SSH vs Telnet, attacker SSH clients, activity over time, top IPs, credentials, commands, captured files (SHA-256) and a live event stream. Every value is clickable to filter all panels. Events appear about 1-2 minutes after the attack (pull every 60 s).
+
+**Forensic toolkit** (`week3/investigate.sh`, run from the Mac):
+
+| Command | Result |
+|---|---|
+| `ip <IP>` | attacker profile: first/last seen, protocols, SSH client, every credential and result, commands, files, recent sessions, alerts |
+| `session <id>` | one intrusion second by second, plus a **replay of the attacker's terminal** rebuilt from Cowrie's recording |
+| `hashes` / `hash <sha256>` | every captured file (type, size, source, first seen) / which IPs and sessions delivered one file |
+| `preserve` | raw logs copied to a root-only folder with a SHA-256 manifest, then made **immutable** (chain of custody) |
+
+Forensic hygiene built in: control characters stripped (no terminal escape injection), URLs defanged, inputs format-checked, file types read as an unprivileged uid, and **samples never leave the honeypot** (hash lookups only). Times are UTC.
+
+**First-day findings** (all times UTC, 3 Nov 2026):
+
+| Case | Evidence | Assessment |
+|---|---|---|
+| Recon bot `77.239.124[.]145` | 851 SSH sessions in 85 min, one new credential per session (`root ubuntu admin deploy postgres test claude`...), then only `uname -s -v -n -r -m`, 0 keystrokes | Credential validation + system discovery (T1110.001, T1082). No payload. Its alerts are mostly noise, which is a tuning task |
+| Dropper chain, 3 IPs | `92.118.39[.]71`, `92.118.39[.]14` (same /24) and `195.178.110[.]227` uploaded the same 3.3 MB static ELF as `.16` 40 times | One operator or one shared kit, rotating infrastructure |
+| Session `02338e639c70` | login → **two batteries of shell tests** (arithmetic, PID, positional args, functions, subshell scope, pipes, exit codes, a `/proc/self/stat` namespace check) with random nonce markers → SFTP upload of `/root/.16` → `sudo -S` with the login password → `chmod +x` | Sandbox and honeypot detection (T1497), ingress tool transfer (T1105), hidden file (T1564.001), sudo abuse (T1548.003). Cowrie's fake filesystem did not have the uploaded file, so `chmod` failed and the bot retried, which explains the 40 uploads |
+| Loader `160.119.66[.]206/bins/` | `kla.sh` + `net.x86_64` + `net.x86` | VirusTotal on `3674a103...` (`net.x86_64`): Mirai/Gafgyt-derived bot with DDoS floods, persistence (systemd `.networkd.service`/`netd.service`, `/etc/init.d/sys_daemon`, `/etc/cron.d/netupd`), killing of rival malware, XOR-encrypted C2 |
+
+Same banner, different tools: both bots announce `SSH-2.0-Go`, but their **HASSH** client fingerprints differ (`0a07365cc01fa9fc82608ba4019af499` for the recon bot, `2ec37a7cc8daf20b10e1ad6221061ca5` for the dropper). HASSH survives IP rotation, so it is the better indicator.
+
+**Indicators (defanged):**
+
+| Type | Value |
+|---|---|
+| SHA-256 | `a151d3f4f2422531f30a843ffb35479596c86722bb103bdf8591105687f9b125` (`.16`, static x86-64 ELF) |
+| SHA-256 | `3674a103804cac96027fe1cf62aaab4948c1d547d1c885542177a263103b4260` (`net.x86_64`) |
+| SHA-256 | `5d9e4bdee8c8fcb0b534f6336ecace4696d8ed3038de42a969c6e037e41d1de5` (`net.x86`) |
+| SHA-256 | `39be6853a8204ce6455a373a6ffb4cb4672d4a62d90be69f7d6eeb66cda10b96` (`kla.sh`) |
+| SHA-256 | `fba55fd42a6cb14c417c3922d09fbcd105bdce13aff48ef908e6a201174a535d` (`.b0s`, static x86-64 ELF) |
+| URL | `hxxp://160.119.66[.]206/bins/` |
+| HASSH | `0a07365cc01fa9fc82608ba4019af499`, `2ec37a7cc8daf20b10e1ad6221061ca5` |
+| Host artifacts | `.networkd.service`, `netd.service`, `/etc/init.d/sys_daemon`, `/etc/cron.d/netupd`, `.sys_recovery.sh` |
+
 ### Findings from the Week 3 security review (and how they were fixed)
 
 Hunting for a honeypot breakout (`week3/check-attacks.sh`) found no breakout, but it did find three real weaknesses elsewhere:
@@ -312,7 +354,11 @@ bash week3/verify-week3.sh
 terraform plan -parallelism=2 -out=tfplan && terraform apply -parallelism=2 tfplan
 ```
 
-In Kibana: **Discover** → data view **Honeypot (Cowrie)** (`logs-cowrie-*`).
+In Kibana: **Discover** → data view **Honeypot (Cowrie)** (`logs-cowrie-*`), or the dashboard:
+
+```bash
+scp -r week3 lab-core:~/soc-lab/ && ssh lab-core 'bash ~/soc-lab/week3/import-dashboard.sh'
+```
 
 ---
 
