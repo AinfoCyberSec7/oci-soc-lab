@@ -22,6 +22,13 @@ A hardened home-SOC foundation on **Oracle Cloud Always Free**, built with **Ter
   │                                           ┌────────────▼─────────────┐
   └── ssh lab-gw / ssh lab-core ─────────────►│ core-arm (A1.Flex 2/12GB)│
                                               │  Elastic SIEM (Week 2)    │
+                                              └────────────┬─────────────┘
+                                                           │ pulls logs (read-only rsync, every minute)
+                                                           │ Local Peering Gateway, one way
+                                              ┌────────────▼─────────────┐
+ Internet attackers ── TCP 22 / 23 ──────────►│ hp-cowrie (E2.1.Micro)   │
+                                              │  Cowrie honeypot (Week 3)│
+                                              │  own VCN 10.20.0.0/16    │
                                               └──────────────────────────┘
 ```
 
@@ -29,7 +36,7 @@ A hardened home-SOC foundation on **Oracle Cloud Always Free**, built with **Ter
 |---|---|---|---|
 | `core-arm` | VM.Standard.A1.Flex, 2 OCPU / 12 GB | 100 GB | SIEM / workloads (Docker ready) |
 | `wg-gw` | VM.Standard.E2.1.Micro | 50 GB | WireGuard + wstunnel gateway |
-| (Week 3) honeypot | VM.Standard.E2.1.Micro | 50 GB | Cowrie |
+| `hp-cowrie` | VM.Standard.E2.1.Micro | 50 GB | Cowrie SSH/Telnet honeypot (isolated VCN) |
 
 ---
 
@@ -80,6 +87,13 @@ week2/elastic/install-fleet-server.sh  # Fleet Server on core-arm (host install)
 week2/elastic/install-agent.sh       # enrolls any Linux host (token read from stdin)
 week2/elastic/load-rules.sh          # detection-as-code loader
 week2/elastic/rules/*.json           # detection rules (MITRE ATT&CK mapped)
+honeypot.tf                          # Week 3: honeypot VCN, peering, NSG, instance
+cloud-init/honeypot.sh.tftpl         # honeypot first boot: sshd on 22222, egress guards, Docker
+week3/deploy-cowrie.sh               # Cowrie container, pinned by digest, locked down
+week3/logpull-honeypot.sh            # honeypot side of the pull: read-only, forced-command key
+week3/logpull-core.sh                # core side of the pull: pinned host key, 1-minute timer
+week3/cowrie-ingest.sh               # Fleet integration: Cowrie JSON -> logs-cowrie-default
+week3/verify-week3.sh                # read-only end-to-end check (run from the Mac)
 ```
 
 ---
@@ -190,6 +204,104 @@ Kibana: `https://10.10.1.129:5601` (with `lab up`). Verify the certificate finge
 
 ---
 
+## Week 3: Cowrie honeypot on an isolated network
+
+A **Cowrie 3.1.5** SSH and Telnet honeypot that is deliberately open to the internet, on its **own VCN**, with its logs pulled into Elastic. Attackers get a fake shell; the SIEM gets their passwords, commands and malware URLs.
+
+```
+ Internet ── 22 (SSH) / 23 (Telnet) ──► hp-cowrie  10.20.1.15   (VCN 10.20.0.0/16, own subnet + NSG)
+                                         │  Docker: cowrie  host 22→2222, 23→2223
+                                         │  real sshd on 22222, reachable ONLY from core-arm
+                                         │
+                core-arm  10.10.1.129 ───┘  hppull.timer: rsync over SSH every minute (lab → honeypot only)
+                   │  /var/log/honeypot/cowrie/cowrie.json*
+                   ▼
+                Elastic Agent (filestream) ──► logs-cowrie-default ──► 3 honeypot detection rules
+```
+
+**The design rule:** assume the honeypot is compromised. It can be reached from the lab, but it can never reach into the lab.
+
+| Control | Implementation |
+|---|---|
+| Network isolation | Separate VCN, joined to the lab by a Local Peering Gateway. The honeypot's host firewall rejects **every new connection to the lab (10.10.0.0/16)**, and its NSG allows only DNS, HTTP/S and metadata egress |
+| Container isolation | A `DOCKER-USER` rule (systemd `docker-user-guard`) rejects new connections from containers to the lab, as well |
+| Pull, not push | core-arm **pulls** the logs. The honeypot holds no credential for the lab and has nothing to push to |
+| Least-privilege pull key | `authorized_keys` on the honeypot: `from="10.10.1.129",restrict,command="rrsync -ro <log dir>"`. That means one source IP, no shell, no forwarding, read-only, one folder |
+| Read without write | The pull user reads the logs through a **read-only ACL**, not through Cowrie's group (which could write them) |
+| Pinned host key | core-arm checks the honeypot's SSH host key (`StrictHostKeyChecking=yes`, its own known_hosts) |
+| Sandboxed puller | `hppull.service` runs as a dedicated user with `ProtectSystem=strict`, `NoNewPrivileges`, no capabilities |
+| Locked-down container | Image pinned by **sha256 digest**, `--cap-drop ALL`, `no-new-privileges`, read-only root, 384 MB memory, 128 pids. It runs as **uid 20999**: the image's default uid 999 is already used on the host by the Oracle Cloud Agent |
+| No relay | Cowrie's SSH forwarding and tunnelling are off, so attackers can't use the honeypot to attack others |
+| Real admin access | sshd moved to **22222**, allowed only from core-arm (NSG + iptables), with fail2ban. Admin path: Mac → tunnel → `ProxyJump lab-core` |
+| Egress | Only DNS, HTTP/S and the OCI metadata service. SMTP and other ports are blocked, so a captured bot cannot send spam |
+| Bait off by default | `honeypot_bait_enabled = false` until isolation is verified; opening it is one reviewed `terraform apply` |
+| Captured malware | Stored by Cowrie as hash-named files on the honeypot, **never executed and never copied off**. Analysis is by hash lookup only |
+
+**Detection-as-code (Week 3 rules):**
+
+| Rule | Logic | Severity | ATT&CK |
+|---|---|---|---|
+| Attacker logged in with guessed credentials | Threshold: `cowrie.login.success`, per `source.ip` | low | T1110.001, T1078 |
+| Attacker ran commands in the fake shell | Threshold: `cowrie.command.input`, per `source.ip` | medium | T1059.004 Unix Shell |
+| Attacker transferred a file (malware dropper) | Query: `cowrie.session.file_download` / `file_upload` | high | T1105 Ingress Tool Transfer |
+
+**Verified (with `week3/verify-week3.sh`):**
+- Before the bait opened, internet → 22, 23 and 22222 all **timed out**.
+- Honeypot → lab and container → lab: **refused** on every tested port.
+- Pull: 0 events behind and **0 parse errors**.
+- All four rules ran successfully, and all three honeypot rules have **fired on real attacks**.
+- `terraform plan`: no changes.
+
+**First hours of real traffic:**
+- Thousands of events from automated bots, almost entirely Telnet and SSH IoT botnets.
+- Cowrie's default user list rejects only `root/123456` and `root/root`, so most bots "log in" and show their next step.
+- **Router breakout:** `sh`, `system`, then a dropper script.
+- **Honeypot fingerprinting:** bots check quoting (`printf '%s\n' 'a b;$()'`) and subshell variable scoping, to tell a real shell from an emulated one.
+- **Mirai-style loader:** one binary per CPU architecture plus a shell script, from `hxxp://160.119.66[.]206/bins/` (defanged).
+
+### Deploy Week 3 (after Week 2)
+
+```bash
+# 1. infrastructure (bait stays closed: honeypot_bait_enabled = false)
+terraform plan -parallelism=2 -out=tfplan && terraform apply -parallelism=2 tfplan
+```
+
+Add to `~/.ssh/config`:
+
+```
+Host lab-hp
+  HostName 10.20.1.15
+  Port 22222
+  User ubuntu
+  IdentityFile ~/.ssh/oci_lab
+  IdentitiesOnly yes
+  ProxyJump lab-core
+```
+
+```bash
+# 2. Cowrie
+scp week3/deploy-cowrie.sh week3/logpull-honeypot.sh lab-hp:~/
+ssh lab-hp 'bash deploy-cowrie.sh'
+
+# 3. one-way log pull (only the PUBLIC key crosses over)
+scp -r week3 lab-core:~/soc-lab/
+ssh lab-core 'bash ~/soc-lab/week3/logpull-core.sh key' | ssh lab-hp 'bash logpull-honeypot.sh'
+ssh lab-core 'bash ~/soc-lab/week3/logpull-core.sh install'
+
+# 4. ingest + rules
+ssh lab-core 'cd ~/soc-lab && cp week3/cowrie-ingest.sh week2/elastic/ && bash week2/elastic/cowrie-ingest.sh'
+scp week2/elastic/rules/hp-*.json lab-core:~/soc-lab/week2/elastic/rules/
+ssh lab-core 'cd ~/soc-lab/week2/elastic && ./load-rules.sh'
+
+# 5. verify isolation, then open the bait (terraform.tfvars: honeypot_bait_enabled = true)
+bash week3/verify-week3.sh
+terraform plan -parallelism=2 -out=tfplan && terraform apply -parallelism=2 tfplan
+```
+
+In Kibana: **Discover** → data view **Honeypot (Cowrie)** (`logs-cowrie-*`).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -202,6 +314,8 @@ Kibana: `https://10.10.1.129:5601` (with `lab up`). Verify the certificate finge
 | Agent `DEGRADED`: `x509: certificate signed by unknown authority` | Elasticsearch sends only its leaf certificate, so a CA fingerprint alone cannot be matched. Give agents the CA file (`ssl.certificate_authorities`, set by `fleet-setup.sh`); restart the agent if components stay stuck |
 | Kibana menu has no "Alerts" | In 9.x it is **Security → Detections** |
 | Terraform: `no such host` / `i/o timeout` | Intermittent DNS on the admin path; re-run (always use `-parallelism=2`) |
+| `Permission denied` with `sudo cat file*` or `sudo wc < file` | The shell expands globs and redirects **before** sudo runs. Use `sudo sh -c 'cat /var/log/honeypot/cowrie/cowrie.json*'` |
+| Cowrie port is open but sends no banner | Cowrie needs a few seconds after the container starts. `deploy-cowrie.sh` waits up to 60 s for `SSH-` before checking |
 | Admin egress IP changed | Update `admin_cidr`, `terraform apply` |
 | Gateway public IP changed | `lab refresh` |
 
@@ -211,6 +325,8 @@ Kibana: `https://10.10.1.129:5601` (with `lab up`). Verify the certificate finge
 
 - **TCP-over-TCP:** slower under packet loss than plain WireGuard. That's fine for admin, SSH and dashboards.
 - **Secret in instance metadata:** on a rebuild, `wstunnel_prefix` is passed through cloud-init user data (visible to OCI admins and to local users on the gateway via the metadata service). It is one of several layers; rotate it by changing `/etc/wstunnel/env` and `~/.wg-lab/wstunnel.secret`.
+- **The honeypot is meant to be attacked:** its public IP is published to attackers by design, and it stores real malware samples. That's why it has its own VCN, egress filters and a lab-initiated, read-only pull, and why the samples are never moved off it.
+- **Cowrie can be fingerprinted:** skilled attackers can detect an emulated shell (some bots already test for this). The lab collects mostly automated botnet activity, not targeted intrusions.
 - **Single admin IP:** access depends on the admin egress IP. That is intentional; it is the strongest network filter available.
 
 ---
@@ -219,7 +335,7 @@ Kibana: `https://10.10.1.129:5601` (with `lab up`). Verify the certificate finge
 
 - [x] **Week 1:** zero-exposure foundation (this repo)
 - [x] **Week 2:** Elastic Security (SIEM) on `core-arm`, Elastic Agent on all hosts, first detection rule
-- [ ] **Week 3:** Cowrie honeypot on an isolated VCN → Elastic
+- [x] **Week 3:** Cowrie honeypot on an isolated VCN → Elastic, three honeypot detection rules
 - [ ] **Week 4:** n8n threat-intel enrichment and weekly report
 - [ ] **Week 5:** same honeypot attacks in Microsoft Sentinel: a two-SIEM comparison
 

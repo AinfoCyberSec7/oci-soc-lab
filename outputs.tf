@@ -19,3 +19,12 @@ output "tunnel_endpoint" {
 output "next_step" {
   value = var.allow_public_ssh ? "Bootstrap: ssh -i ~/.ssh/oci_lab ubuntu@${oci_core_instance.wg.public_ip} 'sudo cat /etc/wireguard/server.pub' > ~/.wg-lab/server.pub" : "Daily use: lab up  ->  ssh lab-gw (10.66.66.1)  |  ssh lab-core (${oci_core_instance.core.private_ip})  ->  lab down"
 }
+
+output "honeypot_public_ip" {
+  description = "Bait address (22/23 open only when honeypot_bait_enabled = true)"
+  value       = oci_core_instance.hp.public_ip
+}
+
+output "honeypot_private_ip" {
+  value = oci_core_instance.hp.private_ip
+}

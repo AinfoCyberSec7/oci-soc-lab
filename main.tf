@@ -3,7 +3,7 @@
 #  Everything here is Always Free-eligible.
 #    core-arm : VM.Standard.A1.Flex 2 OCPU / 12 GB, 100 GB disk (Elastic SIEM, n8n later)
 #    wg-gw    : VM.Standard.E2.1.Micro, 50 GB disk (WireGuard gateway)
-#  Leaves 50 GB of the 200 GB block allowance for the Week 3 honeypot.
+#  The remaining 50 GB of the 200 GB block allowance is the Week 3 honeypot (honeypot.tf).
 # =====================================================================
 
 # ---------- Compartment ----------
@@ -103,6 +103,12 @@ resource "oci_core_route_table" "public" {
   route_rules {
     network_entity_id = oci_core_internet_gateway.igw.id
     destination       = "0.0.0.0/0"
+    destination_type  = "CIDR_BLOCK"
+  }
+  # Week 3: lab -> honeypot (admin + read-only log pull). See honeypot.tf.
+  route_rules {
+    network_entity_id = oci_core_local_peering_gateway.lab_to_hp.id
+    destination       = var.hp_vcn_cidr
     destination_type  = "CIDR_BLOCK"
   }
 }

@@ -1,0 +1,26 @@
+{
+  "rule_id": "soc-lab-hp-login-success",
+  "name": "Honeypot - Attacker logged in with guessed credentials",
+  "description": "A source IP guessed a username/password that the Cowrie honeypot accepts. In production this would mean a compromised account. One alert per source IP per window. Triage: user.name, cowrie.password, source.ip. MITRE ATT&CK T1110.001 then T1078.",
+  "type": "threshold",
+  "language": "kuery",
+  "index": ["logs-cowrie-*"],
+  "query": "event.action:\"cowrie.login.success\"",
+  "threshold": { "field": ["source.ip"], "value": 1 },
+  "interval": "5m",
+  "from": "now-6m",
+  "risk_score": 21,
+  "severity": "low",
+  "enabled": true,
+  "tags": ["SOC lab", "Honeypot", "Cowrie", "Credential Access", "Initial Access"],
+  "references": ["https://attack.mitre.org/techniques/T1110/001/", "https://attack.mitre.org/techniques/T1078/"],
+  "threat": [
+    { "framework": "MITRE ATT&CK",
+      "tactic": { "id": "TA0006", "name": "Credential Access", "reference": "https://attack.mitre.org/tactics/TA0006/" },
+      "technique": [{ "id": "T1110", "name": "Brute Force", "reference": "https://attack.mitre.org/techniques/T1110/",
+        "subtechnique": [{ "id": "T1110.001", "name": "Password Guessing", "reference": "https://attack.mitre.org/techniques/T1110/001/" }] }] },
+    { "framework": "MITRE ATT&CK",
+      "tactic": { "id": "TA0001", "name": "Initial Access", "reference": "https://attack.mitre.org/tactics/TA0001/" },
+      "technique": [{ "id": "T1078", "name": "Valid Accounts", "reference": "https://attack.mitre.org/techniques/T1078/" }] }
+  ]
+}

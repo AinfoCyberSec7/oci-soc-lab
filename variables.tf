@@ -104,3 +104,24 @@ variable "wstunnel_version" {
   type        = string
   default     = "11.0.0"
 }
+
+# ---------- Week 3: honeypot ----------
+variable "hp_vcn_cidr" {
+  description = "Honeypot VCN, separate from the lab"
+  default     = "10.20.0.0/16"
+}
+
+variable "hp_subnet_cidr" {
+  default = "10.20.1.0/24"
+}
+
+variable "hp_admin_port" {
+  description = "Real sshd port on the honeypot (22/23 belong to Cowrie)"
+  default     = 22222
+}
+
+variable "honeypot_bait_enabled" {
+  description = "Open TCP 22/23 to the internet. Keep false until Cowrie runs and isolation is tested."
+  type        = bool
+  default     = false
+}

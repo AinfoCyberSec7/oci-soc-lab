@@ -1,0 +1,23 @@
+{
+  "rule_id": "soc-lab-hp-commands",
+  "name": "Honeypot - Attacker ran commands in the fake shell",
+  "description": "A source IP logged in to the Cowrie honeypot and typed commands. One alert per source IP per window. Triage: cowrie.input (the commands), cowrie.session (replay the TTY log on the honeypot), source.ip. MITRE ATT&CK T1059.004.",
+  "type": "threshold",
+  "language": "kuery",
+  "index": ["logs-cowrie-*"],
+  "query": "event.action:\"cowrie.command.input\"",
+  "threshold": { "field": ["source.ip"], "value": 1 },
+  "interval": "5m",
+  "from": "now-6m",
+  "risk_score": 47,
+  "severity": "medium",
+  "enabled": true,
+  "tags": ["SOC lab", "Honeypot", "Cowrie", "Execution"],
+  "references": ["https://attack.mitre.org/techniques/T1059/004/"],
+  "threat": [{
+    "framework": "MITRE ATT&CK",
+    "tactic": { "id": "TA0002", "name": "Execution", "reference": "https://attack.mitre.org/tactics/TA0002/" },
+    "technique": [{ "id": "T1059", "name": "Command and Scripting Interpreter", "reference": "https://attack.mitre.org/techniques/T1059/",
+      "subtechnique": [{ "id": "T1059.004", "name": "Unix Shell", "reference": "https://attack.mitre.org/techniques/T1059/004/" }] }]
+  }]
+}

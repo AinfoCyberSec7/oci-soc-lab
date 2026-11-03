@@ -1,0 +1,22 @@
+{
+  "rule_id": "soc-lab-hp-file-download",
+  "name": "Honeypot - Attacker transferred a file (malware dropper)",
+  "description": "An attacker inside the Cowrie honeypot fetched (wget/curl/tftp) or uploaded a file. Cowrie captured it on the isolated honeypot; it is never executed. Triage: cowrie.url, cowrie.shasum (look the hash up in threat intel), source.ip. MITRE ATT&CK T1105.",
+  "type": "query",
+  "language": "kuery",
+  "index": ["logs-cowrie-*"],
+  "query": "event.action:(\"cowrie.session.file_download\" or \"cowrie.session.file_upload\")",
+  "interval": "5m",
+  "from": "now-6m",
+  "max_signals": 50,
+  "risk_score": 73,
+  "severity": "high",
+  "enabled": true,
+  "tags": ["SOC lab", "Honeypot", "Cowrie", "Command and Control"],
+  "references": ["https://attack.mitre.org/techniques/T1105/"],
+  "threat": [{
+    "framework": "MITRE ATT&CK",
+    "tactic": { "id": "TA0011", "name": "Command and Control", "reference": "https://attack.mitre.org/tactics/TA0011/" },
+    "technique": [{ "id": "T1105", "name": "Ingress Tool Transfer", "reference": "https://attack.mitre.org/techniques/T1105/" }]
+  }]
+}
