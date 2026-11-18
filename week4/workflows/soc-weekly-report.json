@@ -1,0 +1,314 @@
+{
+ "id": "socWeeklyReport1",
+ "name": "SOC - Weekly threat report (Telegram)",
+ "active": false,
+ "nodes": [
+  {
+   "parameters": {},
+   "name": "Manual run",
+   "type": "n8n-nodes-base.manualTrigger",
+   "typeVersion": 1,
+   "position": [
+    0,
+    120
+   ],
+   "id": "n01"
+  },
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "weeks",
+       "weeksInterval": 1,
+       "triggerAtDay": [
+        1
+       ],
+       "triggerAtHour": 7,
+       "triggerAtMinute": 0
+      }
+     ]
+    }
+   },
+   "name": "Mondays 07:00 UTC",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    0,
+    320
+   ],
+   "id": "n02"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/logs-cowrie-*/_search",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"size\": 0, \"query\": {\"range\": {\"@timestamp\": {\"gte\": \"now-14d\", \"lt\": \"now\"}}}, \"aggs\": {\"this\": {\"filter\": {\"range\": {\"@timestamp\": {\"gte\": \"now-7d\", \"lt\": \"now\"}}}, \"aggs\": {\"ips\": {\"cardinality\": {\"field\": \"source.ip\"}}, \"sessions\": {\"cardinality\": {\"field\": \"cowrie.session\"}}, \"proto\": {\"terms\": {\"field\": \"network.protocol\", \"size\": 3}}, \"logins\": {\"filter\": {\"term\": {\"event.action\": \"cowrie.login.success\"}}}, \"cmds\": {\"filter\": {\"term\": {\"event.action\": \"cowrie.command.input\"}}, \"aggs\": {\"top\": {\"terms\": {\"field\": \"cowrie.input\", \"size\": 5}}}}, \"files\": {\"filter\": {\"terms\": {\"event.action\": [\"cowrie.session.file_download\", \"cowrie.session.file_upload\"]}}, \"aggs\": {\"u\": {\"cardinality\": {\"field\": \"cowrie.shasum\"}}}}, \"topip\": {\"terms\": {\"field\": \"source.ip\", \"size\": 5}}, \"users\": {\"filter\": {\"term\": {\"event.action\": \"cowrie.login.success\"}}, \"aggs\": {\"top\": {\"terms\": {\"field\": \"user.name\", \"size\": 5}}}}, \"pw\": {\"filter\": {\"terms\": {\"event.action\": [\"cowrie.login.success\", \"cowrie.login.failed\"]}}, \"aggs\": {\"top\": {\"terms\": {\"field\": \"cowrie.password\", \"size\": 5}}}}}}, \"prev\": {\"filter\": {\"range\": {\"@timestamp\": {\"gte\": \"now-14d\", \"lt\": \"now-7d\"}}}, \"aggs\": {\"ips\": {\"cardinality\": {\"field\": \"source.ip\"}}}}}}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "name": "ES - week statistics",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    260,
+    220
+   ],
+   "id": "n03",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_search",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"size\": 0, \"aggs\": {\"ip\": {\"filter\": {\"bool\": {\"filter\": [{\"term\": {\"indicator_type\": \"ip\"}}, {\"range\": {\"first_seen\": {\"gte\": \"now-7d\"}}}], \"must_not\": [{\"term\": {\"verdict\": \"allowlist\"}}]}}, \"aggs\": {\"v\": {\"terms\": {\"field\": \"verdict\", \"size\": 6}}, \"c\": {\"terms\": {\"field\": \"abuseipdb.country\", \"size\": 5}}}}, \"fam\": {\"filter\": {\"term\": {\"indicator_type\": \"sha256\"}}, \"aggs\": {\"f\": {\"terms\": {\"field\": \"virustotal.family\", \"size\": 10}}, \"new\": {\"filter\": {\"range\": {\"first_seen\": {\"gte\": \"now-7d\"}}}}}}}}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "name": "ES - threat-intel summary",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    520,
+    220
+   ],
+   "id": "n04",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/.alerts-security.alerts-default/_search",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"size\": 0, \"query\": {\"range\": {\"@timestamp\": {\"gte\": \"now-7d\"}}}, \"aggs\": {\"r\": {\"terms\": {\"field\": \"kibana.alert.rule.name\", \"size\": 10}}}}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "name": "ES - alerts (7 days)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    780,
+    220
+   ],
+   "id": "n05",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst clean = s => String(s ?? '').replace(/[\\u0000-\\u001f\\u007f]/g,'\u00b7');\nconst defangIp = ip => String(ip ?? '').replace(/\\./g,'[.]');\nconst defangUrl = u => clean(u).replace(/^http/i,'hxxp').replace(/\\./g,'[.]');\nconst nolink = s => clean(s).replace(/:\\/\\//g,'[://]');\nconst n = x => Number(x ?? 0).toLocaleString('en-US');\nconst S = $('ES - week statistics').first().json, T = $('ES - threat-intel summary').first().json, A = $input.first().json;\nconst t = S.aggregations.this, p = S.aggregations.prev, total = t.doc_count, prevTotal = p.doc_count;\nconst trend = prevTotal ? `${total >= prevTotal ? '+' : ''}${Math.round((total - prevTotal) / prevTotal * 100)}% vs previous week` : 'first full week';\nconst protoTotal = t.proto.buckets.reduce((a, b) => a + b.doc_count, 0) || 1;\nconst proto = t.proto.buckets.map(b => `${esc(b.key)} ${Math.round(b.doc_count / protoTotal * 100)}%`).join(' / ');\nconst v = T.aggregations.ip.v.buckets.map(b => `${esc(b.key)} ${n(b.doc_count)}`).join(' \u00b7 ') || '-';\nconst countries = T.aggregations.ip.c.buckets.map(b => `${esc(b.key)} ${b.doc_count}`).join(', ') || '-';\nconst fams = T.aggregations.fam.f.buckets.map(b => esc(b.key)).join(', ') || '-';\nconst end = new Date(), start = new Date(end - 7 * 864e5), d = x => x.toISOString().slice(0, 10);\nconst list = (arr, f) => arr.length ? arr.map(f).join('\\n') : '  -';\nconst text = [\n  `\ud83d\udcca <b>Honeypot weekly threat report</b>`, `<i>${d(start)} \u2192 ${d(end)} (UTC)</i>`, '',\n  `<b>Activity</b>: ${n(total)} events (${trend}) \u00b7 ${n(t.ips.value)} attacker IPs \u00b7 ${n(t.sessions.value)} sessions \u00b7 ${proto}`,\n  `<b>Got in (fake shell)</b>: ${n(t.logins.doc_count)} logins \u00b7 ${n(t.cmds.doc_count)} commands \u00b7 ${n(t.files.doc_count)} file drops (${n(t.files.u.value)} unique files)`,\n  `<b>New attacker IPs checked</b>: ${v}`, `<b>Top countries</b>: ${countries}`,\n  `<b>Malware families seen</b> (${n(T.aggregations.fam.new.doc_count)} new files this week): ${fams}`, '',\n  `<b>Top attackers</b>`, list(t.topip.buckets, b => `  <code>${defangIp(b.key)}</code> ${n(b.doc_count)}`),\n  `<b>Top usernames accepted</b>: ${t.users.top.buckets.map(b => `<code>${esc(clean(b.key).slice(0, 30))}</code>`).join(', ') || '-'}`,\n  `<b>Top passwords tried</b>: ${t.pw.top.buckets.map(b => `<code>${esc(clean(b.key).slice(0, 30))}</code>`).join(', ') || '-'}`,\n  `<b>Top commands</b> (attacker data, do not run)`, list(t.cmds.top.buckets, b => `  ${n(b.doc_count)}\u00d7 <code>${esc(nolink(b.key).slice(0, 70))}</code>`), '',\n  `<b>Alerts raised</b>`, list(A.aggregations?.r?.buckets ?? [], b => `  ${n(b.doc_count)}  ${esc(b.key)}`),\n].join('\\n').slice(0, 4000);\nconst doc = { '@timestamp': end.toISOString(), period_start: start.toISOString(), period_end: end.toISOString(), events: total, previous_week_events: prevTotal,\n  attacker_ips: t.ips.value, sessions: t.sessions.value, logins: t.logins.doc_count, commands: t.cmds.doc_count, file_drops: t.files.doc_count,\n  unique_files: t.files.u.value, verdicts: Object.fromEntries(T.aggregations.ip.v.buckets.map(b => [b.key, b.doc_count])),\n  families: T.aggregations.fam.f.buckets.map(b => b.key), summary: text.replace(/<[^>]+>/g, '') };\nreturn [{ json: { text, doc } }];"
+   },
+   "name": "Compose report",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1040,
+    220
+   ],
+   "id": "n06"
+  },
+  {
+   "parameters": {
+    "chatId": "__TELEGRAM_CHAT_ID__",
+    "text": "={{ $json.text }}",
+    "additionalFields": {
+     "appendAttribution": false,
+     "parse_mode": "HTML",
+     "disable_web_page_preview": true
+    }
+   },
+   "name": "Telegram - send report",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    1300,
+    120
+   ],
+   "id": "n07",
+   "credentials": {
+    "telegramApi": {
+     "id": "GQVOlgrU8ksoJLZh",
+     "name": "Telegram account"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-reports/_doc",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.doc) }}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "name": "ES - store report",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1300,
+    320
+   ],
+   "id": "n08",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  }
+ ],
+ "connections": {
+  "Manual run": {
+   "main": [
+    [
+     {
+      "node": "ES - week statistics",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mondays 07:00 UTC": {
+   "main": [
+    [
+     {
+      "node": "ES - week statistics",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - week statistics": {
+   "main": [
+    [
+     {
+      "node": "ES - threat-intel summary",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - threat-intel summary": {
+   "main": [
+    [
+     {
+      "node": "ES - alerts (7 days)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - alerts (7 days)": {
+   "main": [
+    [
+     {
+      "node": "Compose report",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Compose report": {
+   "main": [
+    [
+     {
+      "node": "Telegram - send report",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "ES - store report",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "UTC",
+  "saveManualExecutions": true,
+  "callerPolicy": "workflowsFromSameOwner",
+  "errorWorkflow": "socErrorAlert001",
+  "saveDataSuccessExecution": "none",
+  "saveDataErrorExecution": "all",
+  "saveExecutionProgress": false
+ },
+ "pinData": {},
+ "tags": []
+}

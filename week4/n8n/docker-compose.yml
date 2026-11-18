@@ -1,0 +1,58 @@
+# Week 4 - n8n (threat-intel automation) on core-arm.
+# Private only: published on the private IP (BIND_IP), reached through the admin tunnel. No webhooks
+# from the internet, no public API. Image pinned by digest (N8N_IMAGE in the git-ignored .env,
+# written by deploy-n8n.sh). Secrets come from root-owned files, never environment values:
+#   /etc/n8n-secrets/encryption-key  -> N8N_ENCRYPTION_KEY_FILE (encrypts stored credentials)
+#   /etc/n8n-secrets/tls/            -> HTTPS certificate from the lab's private CA
+# Both are readable only by root and group 20997, which the container gets via group_add
+# (the image's own uid/gid 1000 is "opc" on the host, so nothing relies on it).
+name: soc-n8n
+
+services:
+  n8n:
+    image: ${N8N_IMAGE:?run deploy-n8n.sh}
+    restart: unless-stopped
+    ports:
+      - "${BIND_IP:?run deploy-n8n.sh}:5678:5678"
+    group_add: ["20997"]
+    environment:
+      - N8N_HOST=${BIND_IP}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - N8N_EDITOR_BASE_URL=https://${BIND_IP}:5678
+      - N8N_SSL_CERT=/certs/n8n.crt
+      - N8N_SSL_KEY=/certs/n8n.key
+      - NODE_EXTRA_CA_CERTS=/certs/ca.crt
+      - N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key
+      - N8N_SECURE_COOKIE=true
+      # no phoning home: telemetry, version checks, templates, personalisation, banners
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+      - N8N_TEMPLATES_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+      - N8N_HIRING_BANNER_ENABLED=false
+      # attack surface: no public REST API, no env access from workflows, no host-level nodes
+      - N8N_PUBLIC_API_DISABLED=true
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - NODES_EXCLUDE=["n8n-nodes-base.executeCommand","n8n-nodes-base.localFileTrigger","n8n-nodes-base.readWriteFile","n8n-nodes-base.ssh","n8n-nodes-base.git"]
+      # housekeeping
+      - GENERIC_TIMEZONE=UTC
+      - TZ=UTC
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+      - NODE_OPTIONS=--max-old-space-size=512
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - /etc/n8n-secrets/tls:/certs:ro
+      - /etc/n8n-secrets/encryption-key:/run/secrets/n8n_encryption_key:ro
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 768m
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  n8n_data:

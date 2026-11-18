@@ -1,0 +1,791 @@
+{
+ "id": "tiEnrich00000001",
+ "name": "TI - Enrich attacker IPs and malware hashes",
+ "active": false,
+ "nodes": [
+  {
+   "parameters": {},
+   "name": "Manual run",
+   "type": "n8n-nodes-base.manualTrigger",
+   "typeVersion": 1,
+   "position": [
+    0,
+    200
+   ],
+   "id": "n01"
+  },
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "minutes",
+       "minutesInterval": 15
+      }
+     ]
+    }
+   },
+   "name": "Every 15 minutes",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    0,
+    400
+   ],
+   "id": "n02"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/logs-cowrie-*/_search",
+    "options": {
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"size\": 0, \"query\": {\"range\": {\"@timestamp\": {\"gte\": \"now-24h\"}}}, \"aggs\": {\"ip\": {\"terms\": {\"field\": \"source.ip\", \"size\": 500}}}}"
+   },
+   "name": "ES - attacker IPs (24 h)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    260,
+    200
+   ],
+   "id": "n03",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// public IPv4 attacker addresses, most active first; private/reserved ranges dropped\nconst buckets = $input.first().json.aggregations?.ip?.buckets ?? [];\nconst reserved = /^(0\\.|10\\.|127\\.|169\\.254\\.|192\\.168\\.|172\\.(1[6-9]|2\\d|3[01])\\.|100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.|22[4-9]\\.|2[3-5]\\d\\.)/;\nconst ips = buckets.map(b => String(b.key)).filter(ip => /^\\d{1,3}(\\.\\d{1,3}){3}$/.test(ip) && !reserved.test(ip));\nif (!ips.length) return [];\nreturn [{ json: { ips, ids: ips.map(ip => 'ip:' + ip) } }];"
+   },
+   "name": "Collect attacker IPs",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    200
+   ],
+   "id": "n04"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_mget",
+    "options": {
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ ids: $json.ids }) }}"
+   },
+   "name": "ES - IP verdict cache",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    780,
+    200
+   ],
+   "id": "n05",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// skip: allowlisted, or checked in the last 7 days. At most 10 per run (AbuseIPDB free tier: 1,000/day)\nconst docs = $input.first().json.docs ?? [];\nconst ips = $('Collect attacker IPs').first().json.ips;\nconst known = {}; for (const d of docs) if (d.found) known[d._id] = d._source;\nconst week = 7 * 864e5, now = Date.now(), out = [];\nfor (const ip of ips) {\n  const s = known['ip:' + ip];\n  if (s && (s.verdict === 'allowlist' || (s.last_checked && now - Date.parse(s.last_checked) < week))) continue;\n  out.push({ json: { ip, first_seen: s?.first_seen ?? new Date().toISOString() } });\n  if (out.length >= 10) break;\n}\nreturn out;"
+   },
+   "name": "Pick IPs to check",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1040,
+    200
+   ],
+   "id": "n06"
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "https://api.abuseipdb.com/api/v2/check",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 1100
+      }
+     },
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "json"
+      }
+     },
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendQuery": true,
+    "queryParameters": {
+     "parameters": [
+      {
+       "name": "ipAddress",
+       "value": "={{ $json.ip }}"
+      },
+      {
+       "name": "maxAgeInDays",
+       "value": "90"
+      }
+     ]
+    },
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    }
+   },
+   "name": "AbuseIPDB",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1300,
+    200
+   ],
+   "id": "n07",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "pVSj6MblBfmvf8uZ",
+     "name": "TI - AbuseIPDB"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "=https://api.greynoise.io/v3/community/{{ $('Pick IPs to check').all()[$itemIndex].json.ip }}",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 2500
+      }
+     },
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "json"
+      }
+     },
+     "timeout": 30000
+    },
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    }
+   },
+   "name": "GreyNoise (community)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1560,
+    200
+   ],
+   "id": "n08"
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "=https://otx.alienvault.com/api/v1/indicators/IPv4/{{ $('Pick IPs to check').all()[$itemIndex].json.ip }}/general",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 500
+      }
+     },
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "json"
+      }
+     },
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    }
+   },
+   "name": "AlienVault OTX (IP)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1820,
+    200
+   ],
+   "id": "n09",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "pn1gsWzhlqXqTvWI",
+     "name": "TI - AlienVault OTX"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// one cached verdict per IP. Only facts from the providers are stored; failed lookups retry after 1 day\nconst picks = $('Pick IPs to check').all(), ab = $('AbuseIPDB').all(), gn = $('GreyNoise (community)').all(), ox = $('AlienVault OTX (IP)').all();\nconst nowIso = new Date().toISOString(), retryIso = new Date(Date.now() - 6 * 864e5).toISOString();\nlet ndjson = ''; const verdicts = [];\npicks.forEach((p, i) => {\n  const ip = p.json.ip, errors = [];\n  const a = ab[i]?.json, g = gn[i]?.json, o = ox[i]?.json;\n  const A = a?.statusCode === 200 ? a.body?.data : (errors.push('abuseipdb:' + (a?.statusCode ?? 'none')), null);\n  const G = (g?.statusCode === 200 || g?.statusCode === 404) ? (g.body ?? {}) : (errors.push('greynoise:' + (g?.statusCode ?? 'none')), null);\n  const O = o?.statusCode === 200 ? o.body : (errors.push('otx:' + (o?.statusCode ?? 'none')), null);\n  const score = A?.abuseConfidenceScore ?? null, pulses = O?.pulse_info?.count ?? 0, cls = G?.classification ?? (G ? 'not_seen' : null);\n  let verdict = (A || G || O) ? 'low' : 'unknown';\n  if ((score ?? 0) >= 25 || pulses > 0) verdict = 'suspicious';\n  if ((score ?? 0) >= 75 || cls === 'malicious') verdict = 'malicious';\n  if (G?.riot === true || cls === 'benign') verdict = 'benign-scanner';\n  const pl = O?.pulse_info?.pulses ?? [];\n  const doc = {\n    indicator: ip, indicator_type: 'ip', first_seen: p.json.first_seen,\n    last_checked: errors.length ? retryIso : nowIso, verdict, errors,\n    abuseipdb: A ? { score, total_reports: A.totalReports, country: A.countryCode, isp: A.isp, usage_type: A.usageType, domain: A.domain } : undefined,\n    greynoise: G ? { classification: cls, noise: !!G.noise, riot: !!G.riot, name: G.name ?? null, last_seen: G.last_seen ?? null } : undefined,\n    otx: O ? { pulse_count: pulses, pulses: pl.slice(0, 10).map(x => x.name), tags: [...new Set(pl.flatMap(x => x.tags ?? []))].slice(0, 20) } : undefined,\n  };\n  ndjson += JSON.stringify({ index: { _id: 'ip:' + ip } }) + '\\n' + JSON.stringify(doc) + '\\n';\n  verdicts.push({ ip, verdict, score, greynoise: cls, otx_pulses: pulses, errors: errors.join(',') });\n});\nreturn [{ json: { ndjson, checked: picks.length, verdicts } }];"
+   },
+   "name": "Build IP verdicts",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2080,
+    200
+   ],
+   "id": "n10"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_bulk?refresh=true",
+    "options": {
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/x-ndjson",
+    "body": "={{ $json.ndjson }}"
+   },
+   "name": "ES - write IP verdicts",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2340,
+    200
+   ],
+   "id": "n11",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/logs-cowrie-*/_search",
+    "options": {
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"size\": 0, \"query\": {\"bool\": {\"filter\": [{\"terms\": {\"event.action\": [\"cowrie.session.file_download\", \"cowrie.session.file_upload\"]}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-30d\"}}}]}}, \"aggs\": {\"h\": {\"terms\": {\"field\": \"cowrie.shasum\", \"size\": 200}, \"aggs\": {\"f\": {\"min\": {\"field\": \"@timestamp\"}}, \"n\": {\"terms\": {\"field\": \"cowrie.filename\", \"size\": 1}}, \"u\": {\"terms\": {\"field\": \"cowrie.url\", \"size\": 1}}}}}}"
+   },
+   "name": "ES - captured file hashes (30 d)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    260,
+    500
+   ],
+   "id": "n12",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// SHA-256 of files attackers dropped; only the hash ever leaves the lab, never the file\nconst b = $input.first().json.aggregations?.h?.buckets ?? [];\nconst items = b.filter(x => /^[0-9a-f]{64}$/.test(x.key)).map(x => ({ sha256: x.key, first_seen: x.f?.value_as_string, source: x.u?.buckets?.[0]?.key ?? null, filename: x.n?.buckets?.[0]?.key ?? null }));\nif (!items.length) return [];\nreturn [{ json: { items, ids: items.map(x => 'sha256:' + x.sha256) } }];"
+   },
+   "name": "Collect hashes",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    500
+   ],
+   "id": "n13"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_mget",
+    "options": {
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ ids: $json.ids }) }}"
+   },
+   "name": "ES - hash verdict cache",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    780,
+    500
+   ],
+   "id": "n14",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// known verdicts re-checked weekly, hashes VirusTotal did not know yet re-checked daily. Max 3 per run (VT: 4/min)\nconst docs = $input.first().json.docs ?? [];\nconst items = $('Collect hashes').first().json.items;\nconst known = {}; for (const d of docs) if (d.found) known[d._id] = d._source;\nconst now = Date.now(), out = [];\nfor (const it of items) {\n  const s = known['sha256:' + it.sha256];\n  const maxAge = (s?.verdict === 'unknown' ? 1 : 7) * 864e5;\n  if (s && s.last_checked && now - Date.parse(s.last_checked) < maxAge) continue;\n  out.push({ json: it });\n  if (out.length >= 3) break;\n}\nreturn out;"
+   },
+   "name": "Pick hashes to check",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1040,
+    500
+   ],
+   "id": "n15"
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "=https://www.virustotal.com/api/v3/files/{{ $json.sha256 }}",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 16000
+      }
+     },
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "json"
+      }
+     },
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    }
+   },
+   "name": "VirusTotal (hash)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1300,
+    500
+   ],
+   "id": "n16",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "ie8L3G7kzcDvXmVy",
+     "name": "TI - VirusTotal"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "=https://otx.alienvault.com/api/v1/indicators/file/{{ $('Pick hashes to check').all()[$itemIndex].json.sha256 }}/general",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 500
+      }
+     },
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "json"
+      }
+     },
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    }
+   },
+   "name": "AlienVault OTX (hash)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1560,
+    500
+   ],
+   "id": "n17",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "pn1gsWzhlqXqTvWI",
+     "name": "TI - AlienVault OTX"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const picks = $('Pick hashes to check').all(), vt = $('VirusTotal (hash)').all(), ox = $('AlienVault OTX (hash)').all();\nconst nowIso = new Date().toISOString(), retryIso = new Date(Date.now() - 6 * 864e5).toISOString();\nlet ndjson = ''; const verdicts = [];\npicks.forEach((p, i) => {\n  const h = p.json.sha256, errors = [];\n  const v = vt[i]?.json, o = ox[i]?.json;\n  const V = v?.statusCode === 200 ? v.body?.data?.attributes : null;\n  if (!V && v?.statusCode !== 404) errors.push('virustotal:' + (v?.statusCode ?? 'none'));\n  const O = o?.statusCode === 200 ? o.body : (errors.push('otx:' + (o?.statusCode ?? 'none')), null);\n  const st = V?.last_analysis_stats ?? {};\n  let verdict = V ? 'low' : 'unknown';\n  if ((st.malicious ?? 0) >= 1) verdict = 'suspicious';\n  if ((st.malicious ?? 0) >= 5) verdict = 'malicious';\n  const family = V?.popular_threat_classification?.suggested_threat_label ?? null;\n  const doc = {\n    indicator: h, indicator_type: 'sha256', first_seen: p.json.first_seen, verdict, errors,\n    last_checked: errors.length ? retryIso : nowIso,\n    source: p.json.source, filename: p.json.filename,\n    virustotal: V ? { malicious: st.malicious ?? 0, suspicious: st.suspicious ?? 0, undetected: st.undetected ?? 0, family, type: V.type_description ?? null,\n                      names: (V.names ?? []).slice(0, 5), first_submission: V.first_submission_date ? new Date(V.first_submission_date * 1000).toISOString() : null }\n                  : { known: false },\n    otx: O ? { pulse_count: O.pulse_info?.count ?? 0, pulses: (O.pulse_info?.pulses ?? []).slice(0, 10).map(x => x.name) } : undefined,\n  };\n  ndjson += JSON.stringify({ index: { _id: 'sha256:' + h } }) + '\\n' + JSON.stringify(doc) + '\\n';\n  verdicts.push({ sha256: h.slice(0, 16) + '...', verdict, detections: st.malicious ?? null, family, errors: errors.join(',') });\n});\nreturn [{ json: { ndjson, checked: picks.length, verdicts } }];"
+   },
+   "name": "Build hash verdicts",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1820,
+    500
+   ],
+   "id": "n18"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_bulk?refresh=true",
+    "options": {
+     "timeout": 30000
+    },
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/x-ndjson",
+    "body": "={{ $json.ndjson }}"
+   },
+   "name": "ES - write hash verdicts",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2080,
+    500
+   ],
+   "id": "n19",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  }
+ ],
+ "connections": {
+  "ES - attacker IPs (24 h)": {
+   "main": [
+    [
+     {
+      "node": "Collect attacker IPs",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Collect attacker IPs": {
+   "main": [
+    [
+     {
+      "node": "ES - IP verdict cache",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - IP verdict cache": {
+   "main": [
+    [
+     {
+      "node": "Pick IPs to check",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pick IPs to check": {
+   "main": [
+    [
+     {
+      "node": "AbuseIPDB",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "AbuseIPDB": {
+   "main": [
+    [
+     {
+      "node": "GreyNoise (community)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "GreyNoise (community)": {
+   "main": [
+    [
+     {
+      "node": "AlienVault OTX (IP)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "AlienVault OTX (IP)": {
+   "main": [
+    [
+     {
+      "node": "Build IP verdicts",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build IP verdicts": {
+   "main": [
+    [
+     {
+      "node": "ES - write IP verdicts",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - captured file hashes (30 d)": {
+   "main": [
+    [
+     {
+      "node": "Collect hashes",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Collect hashes": {
+   "main": [
+    [
+     {
+      "node": "ES - hash verdict cache",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - hash verdict cache": {
+   "main": [
+    [
+     {
+      "node": "Pick hashes to check",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pick hashes to check": {
+   "main": [
+    [
+     {
+      "node": "VirusTotal (hash)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "VirusTotal (hash)": {
+   "main": [
+    [
+     {
+      "node": "AlienVault OTX (hash)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "AlienVault OTX (hash)": {
+   "main": [
+    [
+     {
+      "node": "Build hash verdicts",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build hash verdicts": {
+   "main": [
+    [
+     {
+      "node": "ES - write hash verdicts",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Manual run": {
+   "main": [
+    [
+     {
+      "node": "ES - attacker IPs (24 h)",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "ES - captured file hashes (30 d)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Every 15 minutes": {
+   "main": [
+    [
+     {
+      "node": "ES - attacker IPs (24 h)",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "ES - captured file hashes (30 d)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "UTC",
+  "saveManualExecutions": true,
+  "callerPolicy": "workflowsFromSameOwner",
+  "errorWorkflow": "socErrorAlert001",
+  "saveDataSuccessExecution": "none",
+  "saveDataErrorExecution": "all",
+  "saveExecutionProgress": false
+ },
+ "pinData": {},
+ "tags": []
+}

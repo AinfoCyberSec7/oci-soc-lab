@@ -22,6 +22,7 @@ A hardened home-SOC foundation on **Oracle Cloud Always Free**, built with **Ter
   │                                           ┌────────────▼─────────────┐
   └── ssh lab-gw / ssh lab-core ─────────────►│ core-arm (A1.Flex 2/12GB)│
                                               │  Elastic SIEM (Week 2)    │
+                                              │  n8n threat intel (Wk 4) │
                                               └────────────┬─────────────┘
                                                            │ pulls logs (read-only rsync, every minute)
                                                            │ Local Peering Gateway, one way
@@ -100,6 +101,14 @@ week3/check-attacks.sh               # read-only breakout hunt on the honeypot +
 week3/investigate.sh                 # forensics: ip | session (+ terminal replay) | hashes | hash | preserve
 week3/import-dashboard.sh            # imports the live Kibana dashboard
 week3/dashboard/*.ndjson             # dashboard, panels, saved search, data view
+week4/elastic-ti-setup.sh            # TI indices + least-privilege Elastic API key for n8n (limits proven)
+week4/deploy-n8n.sh                  # n8n pinned by digest, HTTPS from the lab CA, secrets from root-only files
+week4/n8n/docker-compose.yml         # n8n: private IP only, no public API, host-level nodes disabled
+week4/n8n-import-elastic-cred.sh     # puts the Elastic key into n8n's encrypted store via pipes only
+week4/ti-allowlist.sh                # marks own IPs that must never be sent to threat-intel providers
+week4/import-workflow.sh             # imports workflows; inserts the Telegram chat ID only on the server
+week4/workflows/*.json               # enrichment, malware-drop alert, weekly report, error alert
+week4/verify-week4.sh                # read-only end-to-end check (run from the Mac)
 ```
 
 ---
@@ -296,7 +305,7 @@ Same banner, different tools: both bots announce `SSH-2.0-Go`, but their **HASSH
 
 | Type | Value |
 |---|---|
-| SHA-256 | `a151d3f4f2422531f30a843ffb35479596c86722bb103bdf8591105687f9b125` (`.16`, static x86-64 ELF) |
+| SHA-256 | `a151d3f4f2422531f30a843ffb35479596c86722bb103bdf8591105687f9b125` (`.16`, static x86-64 ELF; VirusTotal: `miner.malxmr/rootkit`, identified in Week 4) |
 | SHA-256 | `3674a103804cac96027fe1cf62aaab4948c1d547d1c885542177a263103b4260` (`net.x86_64`) |
 | SHA-256 | `5d9e4bdee8c8fcb0b534f6336ecace4696d8ed3038de42a969c6e037e41d1de5` (`net.x86`) |
 | SHA-256 | `39be6853a8204ce6455a373a6ffb4cb4672d4a62d90be69f7d6eeb66cda10b96` (`kla.sh`) |
@@ -360,6 +369,67 @@ In Kibana: **Discover** → data view **Honeypot (Cowrie)** (`logs-cowrie-*`), o
 scp -r week3 lab-core:~/soc-lab/ && ssh lab-core 'bash ~/soc-lab/week3/import-dashboard.sh'
 ```
 
+## Week 4: threat-intel enrichment and alerting with n8n
+
+**n8n** on `core-arm` turns raw honeypot events into intelligence: every attacker IP and malware hash is checked against four threat-intel sources, cached in Elastic, and pushed to Telegram when it matters.
+
+```
+ Elastic (attacker IPs, file hashes, alerts)
+        │  read with a least-privilege API key (honeypot data only)
+        ▼
+ n8n  10.10.1.129:5678 (private, HTTPS, 2FA)  ── only attacker IPs + hashes ─► AbuseIPDB · GreyNoise · AlienVault OTX · VirusTotal
+        │
+        ├─► honeypot-ti   one cached verdict per IP / hash (reputation, country, malware family)
+        ├─► Telegram      instant alert on every malware drop · weekly threat report · workflow failures
+        └─► honeypot-reports   weekly reports kept in Elastic
+```
+
+| Workflow | Runs | What it does |
+|---|---|---|
+| **TI - Enrich attacker IPs and malware hashes** | every 15 min | Top attacker IPs (24 h) and dropped-file hashes (30 d) → skip allowlisted and recently checked → AbuseIPDB, GreyNoise (keyless community lookup), OTX for IPs; VirusTotal, OTX for hashes → verdict (`malicious`, `suspicious`, `benign-scanner`, `low`, `unknown`) written to `honeypot-ti`. At most 10 IPs and 3 hashes per run, inside the free-tier limits; failed lookups retry after a day |
+| **SOC - Malware drop alert (Telegram)** | every 2 min | New file drops since the last run (by ingest time, so late events are not missed) → one message per file with VirusTotal detections and family, attacker reputation and the exact `investigate.sh` command. The same file again within 6 h is counted, not re-sent |
+| **SOC - Weekly threat report (Telegram)** | Mondays 07:00 UTC | Activity and trend vs the previous week, verdicts, countries, malware families, top attackers, passwords and commands, alerts per rule. Sent to Telegram and stored in `honeypot-reports` |
+| **SOC - Workflow error alert** | on any failure | Names the workflow, the node and the error |
+
+| Control | Implementation |
+|---|---|
+| Patched, pinned | n8n 2.47.3 (2026 RCE advisories such as CVE-2026-21858 fixed), image pinned by digest |
+| No exposure | Published on the private IP only, HTTPS with a certificate from the lab CA; no webhooks, no public API, no MCP access, AI assistant not enabled |
+| Least privilege to the SIEM | n8n's own Elastic API key: read honeypot events and alerts, write only `honeypot-ti` / `honeypot-reports`. Host logs, Kibana internals, new indices, cluster settings and users all return 403 (tested) |
+| Secrets | API keys typed only into n8n's encrypted credential store (stored as ciphertext, verified). n8n's encryption key and TLS key come from root-only files via `_FILE` variables, readable through a dedicated group (20997), never in `ps` or the environment |
+| Owner account | Unique password, two-factor authentication on |
+| Workflow sandbox | Environment access blocked; command, file, SSH and Git nodes disabled |
+| Container | All capabilities dropped, `no-new-privileges`, 768 MB, 256 processes; telemetry, version checks and templates off |
+| Data minimisation | Only attacker IPs and hashes leave the lab, never samples. Own addresses are allowlisted and never looked up. The Telegram chat ID is inserted at import time and never stored in Git |
+| Safe output | Attacker strings are HTML-escaped and stripped of control characters; IPs and URLs defanged in every message |
+
+**First results:** every enriched attacker IP so far came back `malicious` (AbuseIPDB score 100, often thousands of reports, mostly hosting providers), and the six captured files resolved into two campaigns:
+
+| Family (VirusTotal) | Samples |
+|---|---|
+| Mirai botnet: `trojan.mirai/gafgyt`, `trojan.mirai/ddos`, `trojan.mirai/miraidownloader`, `downloader.mirai/ddos`, `downloader.bash/miraia` | the multi-architecture loader set from `hxxp://160.119.66[.]206/bins/` |
+| Cryptominer: `miner.malxmr/rootkit` | the `.16` payload uploaded 40 times by 3 IPs (Week 3), which explains its `sudo` attempts: the rootkit needs root |
+
+Several attacker IPs also appear in other researchers' honeypot feeds on OTX, an independent confirmation of the data.
+
+### Deploy Week 4 (after Week 3)
+
+```bash
+scp -r week4 lab-core:~/soc-lab/
+ssh lab-core 'bash ~/soc-lab/week4/elastic-ti-setup.sh && bash ~/soc-lab/week4/deploy-n8n.sh'
+# browser: https://10.10.1.129:5678 -> owner account -> Settings > Personal > enable 2FA
+ssh lab-core 'bash ~/soc-lab/week4/n8n-import-elastic-cred.sh'
+# n8n UI: Header Auth credentials "TI - AbuseIPDB" (Key), "TI - VirusTotal" (x-apikey),
+#         "TI - AlienVault OTX" (X-OTX-API-KEY); credential type "Telegram API" for the bot
+grep '^admin_cidr' terraform.tfvars | cut -d'"' -f2 | cut -d/ -f1 | ssh lab-core 'bash ~/soc-lab/week4/ti-allowlist.sh'
+read -rs "CID?Telegram chat ID: "; echo
+printf '%s\n' "$CID" | ssh lab-core 'bash ~/soc-lab/week4/import-workflow.sh week4/workflows/soc-error-alert.json week4/workflows/soc-malware-alert.json week4/workflows/soc-weekly-report.json week4/workflows/ti-enrich.json'; unset CID
+# n8n UI: publish the enrichment, malware-alert and weekly-report workflows
+bash week4/verify-week4.sh
+```
+
+The credential IDs in `week4/workflows/*.json` are those of this lab. On a new install, either re-select the credentials in each HTTP node once, or regenerate the files with your IDs.
+
 ---
 
 ## Troubleshooting
@@ -376,6 +446,10 @@ scp -r week3 lab-core:~/soc-lab/ && ssh lab-core 'bash ~/soc-lab/week3/import-da
 | Terraform: `no such host` / `i/o timeout` | Intermittent DNS on the admin path; re-run (always use `-parallelism=2`) |
 | `Permission denied` with `sudo cat file*` or `sudo wc < file` | The shell expands globs and redirects **before** sudo runs. Use `sudo sh -c 'cat /var/log/honeypot/cowrie/cowrie.json*'` |
 | Cowrie port is open but sends no banner | Cowrie needs a few seconds after the container starts. `deploy-cowrie.sh` waits up to 60 s for `SSH-` before checking |
+| n8n "Execute" ran the schedule trigger instead of the test | Start from the ⚡ icon next to the manual trigger, or Execute ⌄ → choose the trigger |
+| A workflow stopped running after an update | Re-importing a workflow deactivates it: publish it again |
+| Header Auth credential rejected | The **Name** field is the HTTP header the API expects (`Key`, `x-apikey`, `X-OTX-API-KEY`), not a label |
+| Threat-intel sign-up page shows a CloudFront 403 | The vendor blocks VPN/data-centre addresses; sign up from another network. Never disable the admin VPN for it |
 | Admin egress IP changed | Update `admin_cidr`, `terraform apply` |
 | Gateway public IP changed | `lab refresh` |
 
@@ -388,6 +462,7 @@ scp -r week3 lab-core:~/soc-lab/ && ssh lab-core 'bash ~/soc-lab/week3/import-da
 - **The honeypot is meant to be attacked:** its public IP is published to attackers by design, and it stores real malware samples. That's why it has its own VCN, egress filters and a lab-initiated, read-only pull, and why the samples are never moved off it.
 - **Cowrie can be fingerprinted:** skilled attackers can detect an emulated shell (some bots already test for this). The lab collects mostly automated botnet activity, not targeted intrusions.
 - **Elasticsearch still runs as uid 1000** inside its container (the image's default). With `opc` locked, nothing on the host logs in as that uid.
+- **Threat-intel providers see attacker indicators:** AbuseIPDB, GreyNoise, OTX, VirusTotal and Telegram receive attacker IPs and hashes (public threat data). Own addresses are allowlisted; samples are never uploaded.
 - **Single admin IP:** access depends on the admin egress IP. That is intentional; it is the strongest network filter available.
 
 ---
@@ -397,8 +472,9 @@ scp -r week3 lab-core:~/soc-lab/ && ssh lab-core 'bash ~/soc-lab/week3/import-da
 - [x] **Week 1:** zero-exposure foundation (this repo)
 - [x] **Week 2:** Elastic Security (SIEM) on `core-arm`, Elastic Agent on all hosts, first detection rule
 - [x] **Week 3:** Cowrie honeypot on an isolated VCN → Elastic, three honeypot detection rules
-- [ ] **Week 4:** n8n threat-intel enrichment and weekly report
-- [ ] **Week 5:** same honeypot attacks in Microsoft Sentinel: a two-SIEM comparison
+- [x] **Week 4:** n8n threat-intel enrichment (AbuseIPDB, GreyNoise, OTX, VirusTotal), Telegram malware alerts and weekly report
+- [ ] **Week 5:** same honeypot data in Microsoft Sentinel, inside the free trial (daily cap, budget alert, deleted before the trial ends)
+- [ ] **Week 6:** Wazuh (open source) on the same data, then a three-SIEM comparison and the final case study
 
 ---
 

@@ -1,0 +1,88 @@
+{
+ "id": "socErrorAlert001",
+ "name": "SOC - Workflow error alert",
+ "active": false,
+ "nodes": [
+  {
+   "parameters": {},
+   "name": "When any SOC workflow fails",
+   "type": "n8n-nodes-base.errorTrigger",
+   "typeVersion": 1,
+   "position": [
+    0,
+    200
+   ],
+   "id": "n01"
+  },
+  {
+   "parameters": {
+    "jsCode": "const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst clean = s => String(s ?? '').replace(/[\\u0000-\\u001f\\u007f]/g,'\u00b7');\nconst defangIp = ip => String(ip ?? '').replace(/\\./g,'[.]');\nconst defangUrl = u => clean(u).replace(/^http/i,'hxxp').replace(/\\./g,'[.]');\nconst nolink = s => clean(s).replace(/:\\/\\//g,'[://]');\nconst n = x => Number(x ?? 0).toLocaleString('en-US');\nconst j = $input.first().json, e = j.execution ?? {};\nconst msg = clean(e.error?.message ?? 'unknown error').slice(0, 300);\nconst text = `\u26a0\ufe0f <b>n8n workflow failed</b>\\n<b>Workflow</b>: ${esc(j.workflow?.name)}\\n<b>Node</b>: ${esc(e.lastNodeExecuted ?? '-')}\\n<b>Error</b>: <code>${esc(msg)}</code>\\n<b>When</b>: ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC (execution ${esc(e.id ?? '-')})`;\nreturn [{ json: { text } }];"
+   },
+   "name": "Compose error message",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    260,
+    200
+   ],
+   "id": "n02"
+  },
+  {
+   "parameters": {
+    "chatId": "__TELEGRAM_CHAT_ID__",
+    "text": "={{ $json.text }}",
+    "additionalFields": {
+     "appendAttribution": false,
+     "parse_mode": "HTML",
+     "disable_web_page_preview": true
+    }
+   },
+   "name": "Telegram - send error",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    520,
+    200
+   ],
+   "id": "n03",
+   "credentials": {
+    "telegramApi": {
+     "id": "GQVOlgrU8ksoJLZh",
+     "name": "Telegram account"
+    }
+   }
+  }
+ ],
+ "connections": {
+  "When any SOC workflow fails": {
+   "main": [
+    [
+     {
+      "node": "Compose error message",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Compose error message": {
+   "main": [
+    [
+     {
+      "node": "Telegram - send error",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "UTC",
+  "saveManualExecutions": true,
+  "callerPolicy": "workflowsFromSameOwner"
+ },
+ "pinData": {},
+ "tags": []
+}
