@@ -123,7 +123,7 @@
   },
   {
    "parameters": {
-    "jsCode": "// skip: allowlisted, or checked in the last 7 days. At most 10 per run (AbuseIPDB free tier: 1,000/day)\nconst docs = $input.first().json.docs ?? [];\nconst ips = $('Collect attacker IPs').first().json.ips;\nconst known = {}; for (const d of docs) if (d.found) known[d._id] = d._source;\nconst week = 7 * 864e5, now = Date.now(), out = [];\nfor (const ip of ips) {\n  const s = known['ip:' + ip];\n  if (s && (s.verdict === 'allowlist' || (s.last_checked && now - Date.parse(s.last_checked) < week))) continue;\n  out.push({ json: { ip, first_seen: s?.first_seen ?? new Date().toISOString() } });\n  if (out.length >= 10) break;\n}\nreturn out;"
+    "jsCode": "// skip: allowlisted, or checked in the last 7 days. At most 10 per run (AbuseIPDB free tier: 1,000/day)\nconst docs = $input.first().json.docs ?? [];\nconst ips = $('Collect attacker IPs').first().json.ips;\nconst known = {}; for (const d of docs) if (d.found) known[d._id] = d._source;\nconst week = 7 * 864e5, now = Date.now(), out = [];\nfor (const ip of ips) {\n  const s = known['ip:' + ip];\n  if (s && (s.verdict === 'allowlist' || (s.last_checked && now - Date.parse(s.last_checked) < week))) continue;\n  const onlyGreyNoiseMissing = s?.abuseipdb && (s.errors ?? []).length > 0 && s.errors.every(e => e.startsWith('greynoise:'));\n  if (onlyGreyNoiseMissing && s.last_checked && now - Date.parse(s.last_checked) < 2 * week) continue; // the backfill branch retries GreyNoise alone\n  out.push({ json: { ip, first_seen: s?.first_seen ?? new Date().toISOString() } });\n  if (out.length >= 10) break;\n}\nreturn out;"
    },
    "name": "Pick IPs to check",
    "type": "n8n-nodes-base.code",
@@ -285,7 +285,7 @@
   },
   {
    "parameters": {
-    "jsCode": "// one cached verdict per IP. Only facts from the providers are stored; failed lookups retry after 1 day\nconst picks = $('Pick IPs to check').all(), ab = $('AbuseIPDB').all(), gn = $('GreyNoise (community)').all(), ox = $('AlienVault OTX (IP)').all();\nconst nowIso = new Date().toISOString(), retryIso = new Date(Date.now() - 6 * 864e5).toISOString();\nlet ndjson = ''; const verdicts = [];\npicks.forEach((p, i) => {\n  const ip = p.json.ip, errors = [];\n  const a = ab[i]?.json, g = gn[i]?.json, o = ox[i]?.json;\n  const A = a?.statusCode === 200 ? a.body?.data : (errors.push('abuseipdb:' + (a?.statusCode ?? 'none')), null);\n  const G = (g?.statusCode === 200 || g?.statusCode === 404) ? (g.body ?? {}) : (errors.push('greynoise:' + (g?.statusCode ?? 'none')), null);\n  const O = o?.statusCode === 200 ? o.body : (errors.push('otx:' + (o?.statusCode ?? 'none')), null);\n  const score = A?.abuseConfidenceScore ?? null, pulses = O?.pulse_info?.count ?? 0, cls = G?.classification ?? (G ? 'not_seen' : null);\n  let verdict = (A || G || O) ? 'low' : 'unknown';\n  if ((score ?? 0) >= 25 || pulses > 0) verdict = 'suspicious';\n  if ((score ?? 0) >= 75 || cls === 'malicious') verdict = 'malicious';\n  if (G?.riot === true || cls === 'benign') verdict = 'benign-scanner';\n  const pl = O?.pulse_info?.pulses ?? [];\n  const doc = {\n    indicator: ip, indicator_type: 'ip', first_seen: p.json.first_seen,\n    last_checked: errors.length ? retryIso : nowIso, verdict, errors,\n    abuseipdb: A ? { score, total_reports: A.totalReports, country: A.countryCode, isp: A.isp, usage_type: A.usageType, domain: A.domain } : undefined,\n    greynoise: G ? { classification: cls, noise: !!G.noise, riot: !!G.riot, name: G.name ?? null, last_seen: G.last_seen ?? null } : undefined,\n    otx: O ? { pulse_count: pulses, pulses: pl.slice(0, 10).map(x => x.name), tags: [...new Set(pl.flatMap(x => x.tags ?? []))].slice(0, 20) } : undefined,\n  };\n  ndjson += JSON.stringify({ index: { _id: 'ip:' + ip } }) + '\\n' + JSON.stringify(doc) + '\\n';\n  verdicts.push({ ip, verdict, score, greynoise: cls, otx_pulses: pulses, errors: errors.join(',') });\n});\nreturn [{ json: { ndjson, checked: picks.length, verdicts } }];"
+    "jsCode": "// one cached verdict per IP. Only facts from the providers are stored; failed lookups retry after 1 day\nconst picks = $('Pick IPs to check').all(), ab = $('AbuseIPDB').all(), gn = $('GreyNoise (community)').all(), ox = $('AlienVault OTX (IP)').all();\nconst nowIso = new Date().toISOString(), retryIso = new Date(Date.now() - 6 * 864e5).toISOString();\nlet ndjson = ''; const verdicts = [];\npicks.forEach((p, i) => {\n  const ip = p.json.ip, errors = [];\n  const a = ab[i]?.json, g = gn[i]?.json, o = ox[i]?.json;\n  const A = a?.statusCode === 200 ? a.body?.data : (errors.push('abuseipdb:' + (a?.statusCode ?? 'none')), null);\n  const G = (g?.statusCode === 200 || g?.statusCode === 404) ? (g.body ?? {}) : (errors.push('greynoise:' + (g?.statusCode ?? 'none')), null);\n  const O = o?.statusCode === 200 ? o.body : (errors.push('otx:' + (o?.statusCode ?? 'none')), null);\n  const score = A?.abuseConfidenceScore ?? null, pulses = O?.pulse_info?.count ?? 0, cls = G?.classification ?? (G ? 'not_seen' : null);\n  let verdict = (A || G || O) ? 'low' : 'unknown';\n  if ((score ?? 0) >= 25 || pulses > 0) verdict = 'suspicious';\n  if ((score ?? 0) >= 75 || cls === 'malicious') verdict = 'malicious';\n  if (G?.riot === true || cls === 'benign') verdict = 'benign-scanner';\n  const pl = O?.pulse_info?.pulses ?? [];\n  const doc = {\n    indicator: ip, indicator_type: 'ip', first_seen: p.json.first_seen,\n    last_checked: (errors.length && !errors.every(e => e.startsWith('greynoise:'))) ? retryIso : nowIso, verdict, errors,\n    abuseipdb: A ? { score, total_reports: A.totalReports, country: A.countryCode, isp: A.isp, usage_type: A.usageType, domain: A.domain } : undefined,\n    greynoise: G ? { classification: cls, noise: !!G.noise, riot: !!G.riot, name: G.name ?? null, last_seen: G.last_seen ?? null } : undefined,\n    otx: O ? { pulse_count: pulses, pulses: pl.slice(0, 10).map(x => x.name), tags: [...new Set(pl.flatMap(x => x.tags ?? []))].slice(0, 20) } : undefined,\n  };\n  ndjson += JSON.stringify({ index: { _id: 'ip:' + ip } }) + '\\n' + JSON.stringify(doc) + '\\n';\n  verdicts.push({ ip, verdict, score, greynoise: cls, otx_pulses: pulses, errors: errors.join(',') });\n});\nreturn [{ json: { ndjson, checked: picks.length, verdicts } }];"
    },
    "name": "Build IP verdicts",
    "type": "n8n-nodes-base.code",
@@ -580,6 +580,147 @@
      "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
     }
    }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_search",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "options": {
+     "timeout": 30000
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"size\": 5, \"sort\": [{\"last_checked\": \"asc\"}], \"_source\": [\"indicator\", \"abuseipdb\", \"otx\", \"errors\", \"verdict\"], \"query\": {\"bool\": {\"filter\": [{\"term\": {\"indicator_type\": \"ip\"}}, {\"prefix\": {\"errors\": \"greynoise:\"}}], \"should\": [{\"bool\": {\"must_not\": [{\"exists\": {\"field\": \"greynoise_attempt\"}}]}}, {\"range\": {\"greynoise_attempt\": {\"lt\": \"now-20h\"}}}], \"minimum_should_match\": 1}}}"
+   },
+   "name": "ES - GreyNoise backfill queue",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    260,
+    800
+   ],
+   "id": "g20",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// up to 5 IPs per run whose only missing source is GreyNoise (keyless daily limit); nothing else is re-queried\nconst hits = $input.first().json.hits?.hits ?? [];\nreturn hits.map(h => ({ json: { ip: h._source.indicator, doc: h._source } }));"
+   },
+   "name": "GreyNoise backfill list",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    800
+   ],
+   "id": "g21"
+  },
+  {
+   "parameters": {
+    "method": "GET",
+    "url": "=https://api.greynoise.io/v3/community/{{ $('GreyNoise backfill list').all()[$itemIndex].json.ip }}",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 2500
+      }
+     },
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "json"
+      }
+     },
+     "timeout": 15000
+    },
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    }
+   },
+   "name": "GreyNoise (backfill)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    780,
+    800
+   ],
+   "id": "g22",
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// merge GreyNoise into the stored verdict and recalculate it; on another 429 just note the attempt (retry after ~20 h)\nconst list = $('GreyNoise backfill list').all(), gn = $('GreyNoise (backfill)').all(), nowIso = new Date().toISOString();\nlet ndjson = ''; const results = [];\nlist.forEach((it, i) => {\n  const d = it.json.doc, g = gn[i]?.json, ok = g?.statusCode === 200 || g?.statusCode === 404;\n  let doc;\n  if (ok) {\n    const G = g.body ?? {}, cls = G.classification ?? 'not_seen', score = d.abuseipdb?.score ?? 0, pulses = d.otx?.pulse_count ?? 0;\n    let verdict = 'low';\n    if (score >= 25 || pulses > 0) verdict = 'suspicious';\n    if (score >= 75 || cls === 'malicious') verdict = 'malicious';\n    if (G.riot === true || cls === 'benign') verdict = 'benign-scanner';\n    doc = { greynoise: { classification: cls, noise: !!G.noise, riot: !!G.riot, name: G.name ?? null, last_seen: G.last_seen ?? null },\n            errors: (d.errors ?? []).filter(e => !e.startsWith('greynoise:')), verdict, greynoise_attempt: nowIso };\n    results.push({ ip: it.json.ip, greynoise: cls, verdict });\n  } else {\n    doc = { greynoise_attempt: nowIso };\n    results.push({ ip: it.json.ip, greynoise: 'retry later (' + (g?.statusCode ?? 'none') + ')' });\n  }\n  ndjson += JSON.stringify({ update: { _id: 'ip:' + it.json.ip } }) + '\\n' + JSON.stringify({ doc }) + '\\n';\n});\nreturn [{ json: { ndjson, results } }];"
+   },
+   "name": "Build GreyNoise updates",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1040,
+    800
+   ],
+   "id": "g23"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://10.10.1.129:9200/honeypot-ti/_bulk?refresh=true",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Accept",
+       "value": "application/json"
+      }
+     ]
+    },
+    "options": {
+     "timeout": 30000
+    },
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/x-ndjson",
+    "body": "={{ $json.ndjson }}"
+   },
+   "name": "ES - write GreyNoise updates",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1300,
+    800
+   ],
+   "id": "g24",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "elasticTiKey0001",
+     "name": "Elastic - n8n threat-intel key (read honeypot, write TI)"
+    }
+   }
   }
  ],
  "connections": {
@@ -760,6 +901,11 @@
       "node": "ES - captured file hashes (30 d)",
       "type": "main",
       "index": 0
+     },
+     {
+      "node": "ES - GreyNoise backfill queue",
+      "type": "main",
+      "index": 0
      }
     ]
    ]
@@ -774,6 +920,55 @@
      },
      {
       "node": "ES - captured file hashes (30 d)",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "ES - GreyNoise backfill queue",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "ES - GreyNoise backfill queue": {
+   "main": [
+    [
+     {
+      "node": "GreyNoise backfill list",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "GreyNoise backfill list": {
+   "main": [
+    [
+     {
+      "node": "GreyNoise (backfill)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "GreyNoise (backfill)": {
+   "main": [
+    [
+     {
+      "node": "Build GreyNoise updates",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build GreyNoise updates": {
+   "main": [
+    [
+     {
+      "node": "ES - write GreyNoise updates",
       "type": "main",
       "index": 0
      }
