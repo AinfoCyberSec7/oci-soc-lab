@@ -152,7 +152,7 @@
        "responseFormat": "json"
       }
      },
-     "timeout": 30000
+     "timeout": 15000
     },
     "authentication": "genericCredentialType",
     "genericAuthType": "httpHeaderAuth",
@@ -192,7 +192,8 @@
      "id": "pVSj6MblBfmvf8uZ",
      "name": "TI - AbuseIPDB"
     }
-   }
+   },
+   "onError": "continueRegularOutput"
   },
   {
    "parameters": {
@@ -212,7 +213,7 @@
        "responseFormat": "json"
       }
      },
-     "timeout": 30000
+     "timeout": 15000
     },
     "sendHeaders": true,
     "headerParameters": {
@@ -231,7 +232,8 @@
     1560,
     200
    ],
-   "id": "n08"
+   "id": "n08",
+   "onError": "continueRegularOutput"
   },
   {
    "parameters": {
@@ -251,7 +253,7 @@
        "responseFormat": "json"
       }
      },
-     "timeout": 30000
+     "timeout": 20000
     },
     "authentication": "genericCredentialType",
     "genericAuthType": "httpHeaderAuth",
@@ -278,7 +280,8 @@
      "id": "pn1gsWzhlqXqTvWI",
      "name": "TI - AlienVault OTX"
     }
-   }
+   },
+   "onError": "continueRegularOutput"
   },
   {
    "parameters": {
@@ -476,7 +479,8 @@
      "id": "ie8L3G7kzcDvXmVy",
      "name": "TI - VirusTotal"
     }
-   }
+   },
+   "onError": "continueRegularOutput"
   },
   {
    "parameters": {
@@ -496,7 +500,7 @@
        "responseFormat": "json"
       }
      },
-     "timeout": 30000
+     "timeout": 20000
     },
     "authentication": "genericCredentialType",
     "genericAuthType": "httpHeaderAuth",
@@ -523,7 +527,8 @@
      "id": "pn1gsWzhlqXqTvWI",
      "name": "TI - AlienVault OTX"
     }
-   }
+   },
+   "onError": "continueRegularOutput"
   },
   {
    "parameters": {
