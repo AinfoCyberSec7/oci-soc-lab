@@ -402,6 +402,8 @@ scp -r week3 lab-core:~/soc-lab/ && ssh lab-core 'bash ~/soc-lab/week3/import-da
 | Container | All capabilities dropped, `no-new-privileges`, 768 MB, 256 processes; telemetry, version checks and templates off |
 | Data minimisation | Only attacker IPs and hashes leave the lab, never samples. Own addresses are allowlisted and never looked up. The Telegram chat ID is inserted at import time and never stored in Git |
 | Safe output | Attacker strings are HTML-escaped and stripped of control characters; IPs and URLs defanged in every message |
+| Failure-tolerant lookups | Every external lookup continues on error (timeouts, dropped connections, 4xx/5xx), with per-service time limits. A failed source is recorded on that one indicator and retried the next day; the run still writes everything the other sources returned |
+| Lean execution history | Successful scheduled runs are not stored (results live in Elastic); failures and manual tests are kept in full for 7 days |
 
 **First results:** every enriched attacker IP so far came back `malicious` (AbuseIPDB score 100, often thousands of reports, mostly hosting providers), and the six captured files resolved into two campaigns:
 
@@ -424,7 +426,7 @@ ssh lab-core 'bash ~/soc-lab/week4/n8n-import-elastic-cred.sh'
 grep '^admin_cidr' terraform.tfvars | cut -d'"' -f2 | cut -d/ -f1 | ssh lab-core 'bash ~/soc-lab/week4/ti-allowlist.sh'
 read -rs "CID?Telegram chat ID: "; echo
 printf '%s\n' "$CID" | ssh lab-core 'bash ~/soc-lab/week4/import-workflow.sh week4/workflows/soc-error-alert.json week4/workflows/soc-malware-alert.json week4/workflows/soc-weekly-report.json week4/workflows/ti-enrich.json'; unset CID
-# n8n UI: publish the enrichment, malware-alert and weekly-report workflows
+# n8n UI: publish all four workflows (n8n 2.x: the error-alert workflow only fires from a published version)
 bash week4/verify-week4.sh
 ```
 
@@ -448,6 +450,8 @@ The credential IDs in `week4/workflows/*.json` are those of this lab. On a new i
 | Cowrie port is open but sends no banner | Cowrie needs a few seconds after the container starts. `deploy-cowrie.sh` waits up to 60 s for `SSH-` before checking |
 | n8n "Execute" ran the schedule trigger instead of the test | Start from the ⚡ icon next to the manual trigger, or Execute ⌄ → choose the trigger |
 | A workflow stopped running after an update | Re-importing a workflow deactivates it: publish it again |
+| Failures never reach Telegram | The error-alert workflow must be published too (n8n 2.x draft/publish model) |
+| Enrichment run fails with "The connection was aborted" | A slow threat-intel API (seen with OTX). Fixed by continue-on-error on every lookup node; if it returns, check the node's `onError` setting survived an edit |
 | Header Auth credential rejected | The **Name** field is the HTTP header the API expects (`Key`, `x-apikey`, `X-OTX-API-KEY`), not a label |
 | Threat-intel sign-up page shows a CloudFront 403 | The vendor blocks VPN/data-centre addresses; sign up from another network. Never disable the admin VPN for it |
 | Admin egress IP changed | Update `admin_cidr`, `terraform apply` |
